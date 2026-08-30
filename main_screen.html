@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#1677e8" />
+  <title>목포 스마트 톡</title>
+  <style>
+    :root { --blue:#1677e8; --deep:#115ec2; --ink:#202733; --muted:#788395; --line:#e9edf3; --bg:#f6f8fb; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:#e8edf4; font-family: "Pretendard", "Noto Sans KR", Arial, sans-serif; color:var(--ink); }
+    button { font:inherit; border:0; cursor:pointer; }
+    .phone { width:min(100%, 430px); min-height:100vh; margin:auto; background:#fff; padding-bottom:91px; position:relative; overflow:hidden; }
+    header { padding:20px 20px 0; background:linear-gradient(150deg,#eff8ff 0%,#fff 58%); }
+    .topline { display:flex; align-items:center; justify-content:space-between; }
+    .brand { display:flex; gap:9px; align-items:center; font-weight:800; letter-spacing:-.6px; font-size:19px; }
+    .brand-mark { width:29px; height:29px; border-radius:10px; display:grid; place-items:center; color:#fff; background:linear-gradient(140deg,#10a4f7,#1765d9); box-shadow:0 4px 11px #147ae144; }
+    .bell { width:38px; height:38px; background:#fff; color:#566274; border:1px solid #e9edf4; border-radius:50%; font-size:18px; }
+    .welcome { margin:20px 0 15px; font-size:22px; line-height:1.35; letter-spacing:-1.15px; font-weight:800; }
+    .welcome b { color:var(--blue); }
+    .search { height:51px; border-radius:15px; background:#fff; border:1px solid #e1e7ee; display:flex; align-items:center; padding-left:15px; box-shadow:0 7px 16px #4073a20d; }
+    .search span { flex:1; color:#919cac; font-size:13px; }
+    .search button { align-self:stretch; width:52px; color:white; background:var(--ink); border-radius:0 14px 14px 0; font-size:19px; }
+    main { padding:22px 20px; }
+    .title-row { display:flex; align-items:end; justify-content:space-between; margin-bottom:14px; }
+    h2 { font-size:18px; letter-spacing:-.8px; margin:0; }
+    .more { font-size:12px; color:var(--muted); background:none; }
+    .chips { display:flex; gap:7px; overflow:auto; padding-bottom:4px; scrollbar-width:none; }
+    .chip { white-space:nowrap; padding:8px 13px; color:#5c6879; background:#f3f6fa; border-radius:20px; font-size:12px; }
+    .chip.active { background:#e6f2ff; color:var(--deep); font-weight:700; }
+    .notice { margin:22px 0; background:linear-gradient(100deg,#1479e6,#23a6ed); border-radius:17px; padding:18px; color:#fff; position:relative; overflow:hidden; }
+    .notice:after { content:"MOKPO"; position:absolute; right:-8px; bottom:-13px; font-size:45px; font-weight:900; opacity:.13; letter-spacing:-4px; }
+    .notice small { opacity:.88; font-size:11px; } .notice strong { display:block; margin-top:5px; font-size:16px; letter-spacing:-.6px; }
+    .notice button { position:relative; z-index:1; margin-top:13px; padding:7px 10px; border-radius:9px; background:#fff; color:var(--deep); font-size:11px; font-weight:700; }
+    .section-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:13px; }
+    .section-head p { margin:0; color:#8792a2; font-size:12px; }
+    .policy-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:13px; }
+    .card { border:1px solid var(--line); border-radius:14px; overflow:hidden; background:#fff; box-shadow:0 4px 12px #243b5908; }
+    .poster { height:108px; padding:13px; position:relative; overflow:hidden; }
+    .poster:after { content:""; width:52px; height:52px; border:10px solid #ffffff80; border-radius:50%; position:absolute; right:-16px; bottom:-17px; }
+    .p1 { background:linear-gradient(135deg,#a9edff,#2eb4e2); } .p2 { background:linear-gradient(135deg,#fff5bd,#ffd352); } .p3 { background:linear-gradient(135deg,#c9f1df,#55c992); } .p4 { background:linear-gradient(135deg,#eee0ff,#a77be8); }
+    .poster em { display:inline-block; padding:4px 6px; border-radius:5px; background:#ffffffb8; color:#156191; font-style:normal; font-size:9px; font-weight:800; }
+    .poster strong { position:relative; z-index:1; display:block; margin-top:10px; color:#12324c; font-size:17px; line-height:1.12; letter-spacing:-1px; }
+    .poster i { position:absolute; right:12px; top:15px; font-size:31px; font-style:normal; opacity:.8; }
+    .card-body { padding:10px 11px 12px; } .tag { color:#397fd0; font-size:10px; font-weight:700; } .card h3 { margin:5px 0 0; min-height:32px; font-size:12px; line-height:1.35; letter-spacing:-.55px; font-weight:600; } .card footer { margin-top:10px; display:flex; justify-content:space-between; color:#98a2b1; font-size:10px; } .heart { background:none; color:#a4adba; padding:0; font-size:16px; line-height:10px; } .heart.on { color:#ee5d77; }
+    .bottom { position:fixed; z-index:10; bottom:0; left:50%; transform:translateX(-50%); width:min(100%,430px); height:76px; padding-bottom:env(safe-area-inset-bottom); background:#fff; border-top:1px solid var(--line); display:grid; grid-template-columns:repeat(4,1fr); align-items:center; }
+    .nav { background:none; color:#8791a0; display:flex; align-items:center; flex-direction:column; gap:4px; font-size:10px; }
+    .nav .ico { font-size:21px; line-height:20px; } .nav.active { color:var(--blue); font-weight:700; } .chat { transform:translateY(-16px); } .chat .ico { width:49px; height:49px; display:grid; place-items:center; border:4px solid #fff; border-radius:50%; background:var(--blue); color:#fff; box-shadow:0 4px 13px #1677e84f; font-size:22px; } .chat span:last-child { margin-top:-7px; }
+    .toast { opacity:0; pointer-events:none; transition:.2s; position:fixed; z-index:20; left:50%; bottom:91px; transform:translateX(-50%) translateY(8px); width:max-content; max-width:80%; padding:11px 15px; border-radius:12px; color:#fff; background:#202733eF; font-size:12px; } .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+    @media (min-width:431px) { .phone { min-height:850px; margin-top:20px; border-radius:24px; box-shadow:0 15px 45px #31455e29; } .bottom { bottom:20px; border-radius:0 0 24px 24px; } }
+  </style>
+</head>
+<body>
+  <div class="phone">
+    <header>
+      <div class="topline"><div class="brand"><span class="brand-mark">M</span>목포 스마트 톡</div><button class="bell" aria-label="알림">♧</button></div>
+      <p class="welcome"><b>목포 시민님,</b><br>오늘 필요한 정책을 찾아보세요.</p>
+      <div class="search"><span>궁금한 정책이나 지원금을 검색해 보세요</span><button aria-label="검색">⌕</button></div>
+    </header>
+    <main>
+      <div class="title-row"><h2>맞춤 정책 리스트</h2><button class="more">전체보기  ›</button></div>
+      <div class="chips"><button class="chip active"># 청년 일자리</button><button class="chip"># 주거</button><button class="chip"># 교육 · 직업</button><button class="chip"># 금융 · 복지</button></div>
+      <section class="notice"><small>놓치기 쉬운 맞춤 알림</small><strong>관심 정책을 찜하고<br>새 소식을 바로 받아보세요!</strong><button id="notify">푸시 알림 켜기</button></section>
+      <div class="section-head"><h2>지금 신청 가능한 정책</h2><p>총 24건</p></div>
+      <div class="policy-grid">
+        <article class="card"><div class="poster p1"><em>청년 지원</em><strong>청년<br>취업 준비금</strong><i>🎓</i></div><div class="card-body"><span class="tag">목포시 일자리청년정책과</span><h3>2026 청년 구직활동 지원사업</h3><footer><span>D-12</span><button class="heart" aria-label="찜">♡</button></footer></div></article>
+        <article class="card"><div class="poster p2"><em>생활 안정</em><strong>목포 시민<br>생활안정 지원</strong><i>🏠</i></div><div class="card-body"><span class="tag">목포시 복지정책과</span><h3>취약계층 생활비 지원 안내</h3><footer><span>상시 모집</span><button class="heart on" aria-label="찜">♥</button></footer></div></article>
+        <article class="card"><div class="poster p3"><em>소상공인</em><strong>우리 가게<br>다시 웃다</strong><i>🏪</i></div><div class="card-body"><span class="tag">목포시 지역경제과</span><h3>소상공인 경영안정 자금 지원</h3><footer><span>D-7</span><button class="heart" aria-label="찜">♡</button></footer></div></article>
+        <article class="card"><div class="poster p4"><em>문화 · 관광</em><strong>낭만 항구<br>목포 여행</strong><i>⛵</i></div><div class="card-body"><span class="tag">목포시 관광과</span><h3>목포 문화예술 활동 지원 공모</h3><footer><span>D-20</span><button class="heart" aria-label="찜">♡</button></footer></div></article>
+      </div>
+    </main>
+    <nav class="bottom" aria-label="주요 메뉴"><button class="nav active"><span class="ico">⌂</span><span>홈</span></button><button class="nav"><span class="ico">⌕</span><span>검색</span></button><button class="nav chat"><span class="ico">☏</span><span>상담봇</span></button><button class="nav"><span class="ico">♙</span><span>마이페이지</span></button></nav>
+    <div class="toast" id="toast" role="status"></div>
+  </div>
+  <script>
+    const toast = document.getElementById('toast');
+    function message(text) { toast.textContent=text; toast.classList.add('show'); setTimeout(()=>toast.classList.remove('show'),2200); }
+    document.querySelectorAll('.heart').forEach(button => button.addEventListener('click', () => { const on=button.classList.toggle('on'); button.textContent=on?'♥':'♡'; message(on?'관심 정책에 추가했어요.':'관심 정책에서 제거했어요.'); }));
+    document.getElementById('notify').addEventListener('click', () => message('알림 설정 화면으로 이동합니다.'));
+    document.querySelectorAll('.nav').forEach(n => n.addEventListener('click', () => { document.querySelectorAll('.nav').forEach(x=>x.classList.remove('active')); n.classList.add('active'); message(n.textContent.trim()+' 메뉴를 선택했어요.'); }));
+  </script>
+</body>
+</html>
