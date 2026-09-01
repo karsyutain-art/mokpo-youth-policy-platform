@@ -8,7 +8,7 @@ from youth_data_collector import (
     normalize,
 )
 from mysql_policy_repository import MySQLPolicyRepository
-from policy_matcher import eligible_for_policy, policy_tags
+from policy_matcher import diagnose_eligibility, eligible_for_policy, policy_tags
 
 
 class NormalizationTests(unittest.TestCase):
@@ -50,6 +50,20 @@ class NormalizationTests(unittest.TestCase):
         eligible, reason = eligible_for_policy(user, policy, {"주거"})
         self.assertTrue(eligible)
         self.assertIn("주거", reason)
+
+    def test_eligibility_diagnosis_rejects_explicit_age_mismatch(self):
+        user = {"birth_date": date(1980, 1, 1), "residency_city": "목포", "residency_months": 36}
+        policy = {"min_age": 19, "max_age": 34, "target_region": "목포", "qualification_text": "목포 거주 만 19~34세", "target_condition": "", "residency_condition": "목포 거주"}
+        diagnosis = diagnose_eligibility(user, policy)
+        self.assertEqual(diagnosis["overall"], "대상 아님")
+        self.assertEqual(next(check for check in diagnosis["checks"] if check["key"] == "age")["status"], "ineligible")
+
+    def test_eligibility_diagnosis_keeps_ambiguous_income_for_review(self):
+        user = {"birth_date": date(2000, 1, 1), "residency_city": "목포", "residency_months": 36, "income_band": "중위소득 50~100%"}
+        policy = {"min_age": 19, "max_age": 34, "target_region": "전국(목포 포함)", "qualification_text": "중위소득 기준 충족자", "target_condition": "", "residency_condition": ""}
+        diagnosis = diagnose_eligibility(user, policy)
+        self.assertEqual(diagnosis["overall"], "추가 확인 필요")
+        self.assertEqual(next(check for check in diagnosis["checks"] if check["key"] == "income")["status"], "review")
 
 
 if __name__ == "__main__":

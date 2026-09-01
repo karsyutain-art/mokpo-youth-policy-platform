@@ -48,6 +48,14 @@ class MySQLPolicyRepository:
             for statement in Path("schema_mysql.sql").read_text(encoding="utf-8").split(";"):
                 if statement.strip():
                     cursor.execute(statement)
+            cursor.execute("SHOW COLUMNS FROM policy_change_events")
+            event_columns = {row[0] for row in cursor.fetchall()}
+            cursor.execute("ALTER TABLE policy_change_events MODIFY change_type ENUM('new', 'updated', 'deadline') NOT NULL")
+            if "event_key" not in event_columns:
+                cursor.execute("ALTER TABLE policy_change_events ADD COLUMN event_key VARCHAR(150) NULL AFTER change_type")
+            cursor.execute("SHOW INDEX FROM policy_change_events WHERE Key_name = 'uq_policy_change_events_event_key'")
+            if cursor.fetchone() is None:
+                cursor.execute("ALTER TABLE policy_change_events ADD UNIQUE KEY uq_policy_change_events_event_key (event_key)")
             # 이전 단계에서 생성된 프로필 테이블도 카카오 로그인용 구조로 안전하게 확장한다.
             cursor.execute("SHOW COLUMNS FROM user_profiles")
             columns = {row[0] for row in cursor.fetchall()}
@@ -55,6 +63,16 @@ class MySQLPolicyRepository:
                 cursor.execute("ALTER TABLE user_profiles ADD COLUMN kakao_user_id BIGINT UNSIGNED NULL AFTER id")
             if "email" not in columns:
                 cursor.execute("ALTER TABLE user_profiles ADD COLUMN email VARCHAR(255) NULL AFTER display_name")
+            profile_columns = {
+                "residency_months": "SMALLINT UNSIGNED NULL AFTER residency_city",
+                "employment_status": "VARCHAR(50) NULL AFTER residency_months",
+                "income_band": "VARCHAR(50) NULL AFTER employment_status",
+                "education_level": "VARCHAR(50) NULL AFTER income_band",
+                "household_status": "VARCHAR(50) NULL AFTER education_level",
+            }
+            for column, definition in profile_columns.items():
+                if column not in columns:
+                    cursor.execute(f"ALTER TABLE user_profiles ADD COLUMN {column} {definition}")
             cursor.execute("ALTER TABLE user_profiles MODIFY birth_date DATE NULL")
             cursor.execute("SHOW INDEX FROM user_profiles WHERE Key_name = 'uq_user_profiles_kakao_user_id'")
             if cursor.fetchone() is None:
@@ -74,7 +92,15 @@ class MySQLPolicyRepository:
                 key = self.record_key(record)
                 cursor.execute("SELECT id, content_hash FROM policy_records WHERE record_key = %s", (key,))
                 existing = cursor.fetchone()
-                params = {**record, "record_key": key, "now": now}
+                params = {
+                    **record,
+                    "application_start_date": record.get("application_start_date") or None,
+                    "application_end_date": record.get("application_end_date") or None,
+                    "min_age": record.get("min_age") if record.get("min_age") not in (None, "") else None,
+                    "max_age": record.get("max_age") if record.get("max_age") not in (None, "") else None,
+                    "record_key": key,
+                    "now": now,
+                }
                 if existing is None:
                     cursor.execute(
                         """INSERT INTO policy_records (

@@ -30,8 +30,15 @@ def collect_once(max_pages: int, delay: float, download_attachments: bool) -> No
         raise RuntimeError(f"수집기가 종료 코드 {result.returncode}로 끝났습니다.")
     from policy_matcher import PolicyMatcher
 
-    created = PolicyMatcher().create_candidates()
+    matcher = PolicyMatcher()
+    created = matcher.create_candidates()
     print(f"정책 매칭 후보 생성: {created}건")
+    deadline = matcher.create_deadline_candidates()
+    print(f"마감 임박 이벤트 생성: {deadline['events']}건 / 알림 후보 생성: {deadline['candidates']}건")
+    from rag_policy_search import PolicyRAG
+
+    rag = PolicyRAG().rebuild()
+    print(f"RAG 인덱스 갱신: 정책 {rag['policies']}건 / 청크 {rag['chunks']}건")
 
 
 def main() -> None:
