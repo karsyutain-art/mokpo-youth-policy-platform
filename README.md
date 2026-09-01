@@ -85,6 +85,21 @@ Windows 작업 스케줄러에 등록된 작업은 `scheduled_collector.py --onc
 
 관심 분야는 `취업`, `창업`, `주거`, `교육`, `복지`, `문화`입니다. 자동 수집이 성공하면 후보 생성도 함께 실행되며, 후보는 `policy_match_candidates` 테이블에 `pending` 상태로 저장됩니다. 이후 실제 알림 채널을 연결하면 이 목록의 항목만 전송하면 됩니다.
 
+## 선택 사항: 이메일 알림 발송
+
+카카오 계정에서 이메일 제공에 동의한 사용자에게만 이메일을 보낼 수 있습니다. `.env`에 아래 값을 설정하면 매일 수집 작업 뒤에 아직 전송하지 않은 알림을 한 번만 발송합니다. 설정하지 않으면 발송은 생략되고 웹의 `새 알림` 기능은 그대로 동작합니다.
+
+```env
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_FROM=policy@example.com
+SMTP_USERNAME=policy@example.com
+SMTP_PASSWORD=메일_앱_비밀번호
+SMTP_STARTTLS=true
+```
+
+먼저 실제 메일 없이 대상만 확인하려면 `./.venv/Scripts/python notification_delivery.py --dry-run`을 실행합니다. 메일 서버 주소·앱 비밀번호는 Git에 올리지 않습니다.
+
 ## 웹 서비스 실행 (React + Vite / FastAPI)
 
 화면은 React + Vite, API·카카오 로그인 처리는 FastAPI로 분리했습니다. 터미널 두 개에서 아래 명령을 각각 실행한 뒤 브라우저에서 `http://localhost:5173`을 여세요.
@@ -137,6 +152,46 @@ PUT    /api/notifications/{candidate_id}
 ```
 
 새 알림 화면에서는 알림을 `확인 완료` 또는 `숨기기`로 처리할 수 있습니다. 관심 정책에서 알림을 끈 정책은 신규·변경 알림 목록에서 제외됩니다. 현재는 서비스 내부 알림 관리까지 구현되어 있으며, 실제 카카오톡 메시지 발송은 별도 채널 연동 단계에서 추가합니다.
+
+### 신청 준비 도우미
+
+로그인 사용자는 정책 상세화면에서 `신청 준비 시작`을 눌러 정책별 준비 건을 만들 수 있습니다. 최초 생성 시 공식 공고 확인, 자격조건, 접수방법, 첨부 양식과 증빙서류 대조를 위한 보수적인 기본 체크리스트가 생성됩니다. 사용자는 준비 상태와 메모를 저장하고, 공고에서 직접 확인한 서류를 추가할 수 있습니다.
+
+```text
+POST   /api/policies/{policy_id}/preparations
+GET    /api/preparations
+GET    /api/preparations/{preparation_id}
+PUT    /api/preparations/{preparation_id}
+DELETE /api/preparations/{preparation_id}
+POST   /api/preparations/{preparation_id}/requirements
+PUT    /api/preparations/{preparation_id}/requirements/{requirement_id}
+DELETE /api/preparations/{preparation_id}/requirements/{requirement_id}
+```
+
+## Docker 배포 준비
+
+Docker Desktop이 설치된 환경에서는 `.env.example`을 복사해 `.env`를 만들고 실제 비밀번호·카카오 키·도메인을 입력한 뒤 아래 명령으로 실행할 수 있습니다.
+
+```powershell
+Copy-Item .env.example .env
+docker compose up --build -d
+```
+
+서비스는 기본적으로 `http://localhost:8080`에서 열립니다. 실제 도메인으로 배포할 때는 `PUBLIC_BASE_URL`과 `KAKAO_REDIRECT_URI`를 `https://도메인`으로 바꾸고, 카카오 개발자 콘솔에도 동일한 리다이렉트 URI를 등록해야 합니다. 이 구성은 웹·API·MySQL을 분리하고 웹 서버가 API와 카카오 로그인 경로를 안전하게 중계합니다.
+
+준비 건과 체크리스트는 로그인한 소유자만 조회·변경·삭제할 수 있습니다. 정책 원문의 `content_hash`가 준비 시작 당시와 달라지면 기존 체크리스트를 보존하면서 공고 변경 확인 안내를 표시합니다.
+
+`POST /api/preparations/{preparation_id}/extract`는 공고 본문과 추출된 첨부파일 텍스트에서 주민등록초본, 건강보험료 납부확인서, 재직증명서처럼 실제로 언급된 서류 후보만 추가합니다. 각 후보에는 원문 근거와 추출 신뢰도를 표시하며, 자동 결과는 확정되지 않은 상태로 남습니다. 사용자는 공식 원문과 대조해 확인하거나 수정·삭제해야 합니다.
+
+문항 추출도 같은 원칙으로 동작합니다. `POST /api/preparations/{preparation_id}/form-fields/extract`는 공고·첨부 텍스트에 보이는 신청서 항목만 추가하며 프로필 값을 자동 적용하지 않습니다. 서술형 항목은 `POST /api/preparations/{preparation_id}/form-fields/{field_id}/draft`로 근거 기반 초안을 만들 수 있고, 개인 이력은 추정하지 않으며 `[직접 작성]`으로 남깁니다. `GET /api/preparations/{preparation_id}/export/hwpx`는 현재 문항과 준비서류를 HWPX 파일로 내려받습니다. 이 파일은 준비용 요약본이므로 기관의 원본 양식 제출을 대신하지 않습니다.
+
+신청서 문항은 사용자가 공식 양식에서 확인한 뒤 직접 추가할 수 있습니다. 실명, 생년월일, 연락처, 주소, 학력, 취업 상태는 프로필에 선택적으로 저장되며, 각 문항을 추가할 때 사용자가 해당 값의 사용에 동의한 경우에만 복사됩니다. 복사된 값도 신청 준비 건 안에서 별도로 수정할 수 있습니다.
+
+```text
+POST   /api/preparations/{preparation_id}/form-fields
+PUT    /api/preparations/{preparation_id}/form-fields/{field_id}
+DELETE /api/preparations/{preparation_id}/form-fields/{field_id}
+```
 
 ## 근거 기반 AI 정책상담
 

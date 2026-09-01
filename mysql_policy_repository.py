@@ -64,6 +64,11 @@ class MySQLPolicyRepository:
             if "email" not in columns:
                 cursor.execute("ALTER TABLE user_profiles ADD COLUMN email VARCHAR(255) NULL AFTER display_name")
             profile_columns = {
+                "legal_name": "VARCHAR(100) NULL AFTER email",
+                "phone_number": "VARCHAR(30) NULL AFTER legal_name",
+                "postal_code": "VARCHAR(20) NULL AFTER phone_number",
+                "address_line1": "VARCHAR(255) NULL AFTER postal_code",
+                "address_line2": "VARCHAR(255) NULL AFTER address_line1",
                 "residency_months": "SMALLINT UNSIGNED NULL AFTER residency_city",
                 "employment_status": "VARCHAR(50) NULL AFTER residency_months",
                 "income_band": "VARCHAR(50) NULL AFTER employment_status",
@@ -77,6 +82,16 @@ class MySQLPolicyRepository:
             cursor.execute("SHOW INDEX FROM user_profiles WHERE Key_name = 'uq_user_profiles_kakao_user_id'")
             if cursor.fetchone() is None:
                 cursor.execute("ALTER TABLE user_profiles ADD UNIQUE KEY uq_user_profiles_kakao_user_id (kakao_user_id)")
+            cursor.execute("SHOW COLUMNS FROM application_requirements")
+            requirement_columns = {row[0] for row in cursor.fetchall()}
+            if requirement_columns:
+                cursor.execute("ALTER TABLE application_requirements MODIFY source_type ENUM('manual', 'checklist', 'extracted') NOT NULL DEFAULT 'manual'")
+                if "extraction_confidence" not in requirement_columns:
+                    cursor.execute("ALTER TABLE application_requirements ADD COLUMN extraction_confidence DECIMAL(3,2) NULL AFTER source_type")
+            cursor.execute("SHOW COLUMNS FROM application_form_fields")
+            form_columns = {row[0] for row in cursor.fetchall()}
+            if form_columns and "source_type" not in form_columns:
+                cursor.execute("ALTER TABLE application_form_fields ADD COLUMN source_type ENUM('manual', 'extracted') NOT NULL DEFAULT 'manual' AFTER source_evidence")
             connection.commit()
         finally:
             cursor.close()

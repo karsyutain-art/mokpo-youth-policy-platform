@@ -35,6 +35,10 @@ def collect_once(max_pages: int, delay: float, download_attachments: bool) -> No
     print(f"정책 매칭 후보 생성: {created}건")
     deadline = matcher.create_deadline_candidates()
     print(f"마감 임박 이벤트 생성: {deadline['events']}건 / 알림 후보 생성: {deadline['candidates']}건")
+    from notification_delivery import deliver_pending
+
+    delivered = deliver_pending()
+    print(f"이메일 알림 발송: {delivered}")
     from rag_policy_search import PolicyRAG
 
     rag = PolicyRAG().rebuild()
