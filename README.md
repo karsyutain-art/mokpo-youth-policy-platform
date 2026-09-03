@@ -18,6 +18,8 @@ python -m venv .venv
 .\.venv\Scripts\python youth_data_collector.py --max-pages 1
 ```
 
+Docker 백엔드 이미지에는 Playwright Chromium이 함께 설치됩니다. 온통청년 동적 페이지는 `domcontentloaded` 기준으로 최대 60초 동안 열며, 이동 실패 시 한 번 재시도합니다. 특정 목록이나 상세 게시글이 계속 실패해도 오류를 기록하고 나머지 수집을 이어갑니다.
+
 기본 실행 대상은 `youth_tip`, `youth_channel`, `youth_intern`, `gwangju_policy`, `gwangju_job`, `gwangju_reside`, `gwangju_education`, `gwangju_welfare`입니다. API 서버 문제가 해결될 때까지 `youth_policy_api`는 명시적으로 지정했을 때만 실행됩니다.
 
 ## 첨부파일 수집
