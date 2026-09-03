@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 import xml.etree.ElementTree as ET
 import zipfile
@@ -63,6 +64,8 @@ OTHER_LOCAL_GOVERNMENTS = ("서울", "부산", "대구", "인천", "광주광역
 EXPORT_COLUMNS = ("source_site", "category", "title", "target_region", "target_condition", "qualification_text", "min_age", "max_age", "residency_condition", "period", "application_start_date", "application_end_date", "content", "application_method", "organization", "attachment_links", "attachment_files", "attachment_text", "attachment_status", "content_hash", "original_link", "source_record_id", "collected_at")
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 TEXT_ATTACHMENT_EXTENSIONS = {".pdf", ".hwp", ".hwpx"}
+PLAYWRIGHT_NAVIGATION_TIMEOUT_MS = 60_000
+PLAYWRIGHT_NAVIGATION_ATTEMPTS = 2
 
 
 def text_of(node: Any) -> str:
@@ -84,6 +87,19 @@ def load_local_env(path: Path = Path(".env")) -> None:
 
 def normalize_whitespace(value: str) -> str:
     return re.sub(r"[ \t]+", " ", re.sub(r"\n{3,}", "\n\n", value)).strip()
+
+
+def goto_with_retry(page: Any, url: str, *, attempts: int = PLAYWRIGHT_NAVIGATION_ATTEMPTS) -> bool:
+    """Open a dynamic page without waiting for background traffic to become idle."""
+    for attempt in range(1, attempts + 1):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=PLAYWRIGHT_NAVIGATION_TIMEOUT_MS)
+            return True
+        except Exception as error:
+            print(f"페이지 이동 실패 ({attempt}/{attempts}): {url} - {error}", file=sys.stderr)
+            if attempt < attempts:
+                time.sleep(2)
+    return False
 
 
 def extract_age_conditions(text: str) -> tuple[int | None, int | None]:
@@ -336,9 +352,15 @@ class YouthCenterCollector:
             page = browser.new_page(user_agent=HEADERS["User-Agent"])
             try:
                 for page_number in range(1, max_pages + 1):
-                    page.goto(f"{YOUTHCENTER_BASE}/bbs03List/{board_id}?curPageNum={page_number}", wait_until="networkidle")
-                    page.wait_for_selector("#bbs03List li", timeout=15_000)
-                    posts = page.locator("#bbs03List li").evaluate_all("els => els.map(el => ({title: el.querySelector('.subject')?.innerText || '', post: window.jQuery ? window.jQuery(el).data('vData') : null}))")
+                    list_url = f"{YOUTHCENTER_BASE}/bbs03List/{board_id}?curPageNum={page_number}"
+                    if not goto_with_retry(page, list_url):
+                        continue
+                    try:
+                        page.wait_for_selector("#bbs03List li", timeout=30_000)
+                        posts = page.locator("#bbs03List li").evaluate_all("els => els.map(el => ({title: el.querySelector('.subject')?.innerText || '', post: window.jQuery ? window.jQuery(el).data('vData') : null}))")
+                    except Exception as error:
+                        print(f"온통청년 목록 해석 실패: {list_url} - {error}", file=sys.stderr)
+                        continue
                     if not posts:
                         break
                     for post in posts:
@@ -346,11 +368,16 @@ class YouthCenterCollector:
                         if not post_id:
                             continue
                         detail_url = f"{YOUTHCENTER_BASE}/bbs03View/{board_id}/{post_id}"
-                        page.goto(detail_url, wait_until="networkidle")
-                        locator = page.locator("#contents, #content, main")
-                        content = locator.first.inner_text() if locator.count() else page.locator("body").inner_text()
-                        yield {"title": post.get("title", "").strip(), "content": content, "target_condition": "", "period": "", "application_method": "", "organization": "", "original_link": detail_url}
-                        time.sleep(self.delay)
+                        if not goto_with_retry(page, detail_url):
+                            continue
+                        try:
+                            locator = page.locator("#contents, #content, main")
+                            content = locator.first.inner_text(timeout=30_000) if locator.count() else page.locator("body").inner_text(timeout=30_000)
+                            yield {"title": post.get("title", "").strip(), "content": content, "target_condition": "", "period": "", "application_method": "", "organization": "", "original_link": detail_url}
+                        except Exception as error:
+                            print(f"온통청년 상세 해석 실패: {detail_url} - {error}", file=sys.stderr)
+                        finally:
+                            time.sleep(self.delay)
             finally:
                 browser.close()
 
