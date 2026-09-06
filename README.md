@@ -75,6 +75,20 @@ APScheduler는 이 명령이 실행 중인 동안만 동작합니다. PC를 재�
 
 Windows 작업 스케줄러에 등록된 작업은 `scheduled_collector.py --once`를 호출해 수집을 한 번 실행한 뒤 종료합니다. 따라서 작업 스케줄러 방식에서는 별도의 터미널을 계속 열어둘 필요가 없습니다.
 
+다음 명령으로 매일 오전 3시 작업을 등록하거나 최신 설정으로 갱신할 수 있습니다.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\register_windows_task.ps1
+```
+
+이 설정은 PC가 꺼져 실행 시각을 놓친 경우 다음 로그인 후 보충 실행하고, 절전 상태에서는 PC를 깨우며, 배터리 사용 중에도 실행합니다. 실패 시 10분 간격으로 최대 3회 재시도합니다. PC가 완전히 종료된 동안에는 실행할 수 없습니다. 실행 결과는 `logs/scheduled_collector_YYYYMMDD.log`에 기록됩니다.
+
+수집이 끝난 뒤 정책 매칭·알림 후보·RAG 인덱스만 다시 처리하려면 다음 명령을 사용합니다. 자동 수집 실패 분석 시에도 같은 날짜의 로그에서 전체 오류 내용을 확인할 수 있습니다.
+
+```powershell
+.\.venv\Scripts\python scheduled_collector.py --postprocess-only
+```
+
 ## 맞춤 정책 매칭 후보
 
 사용자 프로필은 생년월일, 목포 거주 여부, 관심 분야만 저장합니다. 아래 명령으로 프로필을 추가한 뒤, 새 공고·변경 공고에 대한 알림 후보를 생성할 수 있습니다. 실제 이름이나 생년월일은 채팅에 공유하지 말고 로컬 터미널에서만 입력하세요.
@@ -85,7 +99,31 @@ Windows 작업 스케줄러에 등록된 작업은 `scheduled_collector.py --onc
 .\.venv\Scripts\python policy_matcher.py list
 ```
 
-관심 분야는 `취업`, `창업`, `주거`, `교육`, `복지`, `문화`입니다. 자동 수집이 성공하면 후보 생성도 함께 실행되며, 후보는 `policy_match_candidates` 테이블에 `pending` 상태로 저장됩니다. 이후 실제 알림 채널을 연결하면 이 목록의 항목만 전송하면 됩니다.
+관심 분야는 `취업`, `창업`, `주거`, `교육`, `복지`, `문화`입니다. 자동 수집이 성공하면 후보 생성도 함께 실행되며, 후보는 `policy_match_candidates` 테이블에 `pending` 상태로 저장됩니다.
+
+## 웹 푸시 알림
+
+로그인한 사용자는 **새 알림** 화면에서 브라우저 알림을 허용할 수 있습니다. 구독 정보는 MySQL에 저장되고, 매일 수집·매칭 작업이 끝나면 새 공고·변경 공고·마감 임박 후보를 브라우저로 발송합니다. 브라우저 푸시는 개발 중에는 `localhost`, 배포 환경에서는 반드시 **HTTPS**에서만 동작합니다.
+
+먼저 VAPID 키를 한 번 생성해 출력값을 로컬 `.env`에 넣으세요. 키는 계정별 비밀값이므로 GitHub에 올리지 않습니다.
+
+```powershell
+.\.venv\Scripts\python generate_vapid_keys.py
+```
+
+```env
+VAPID_PUBLIC_KEY=생성된_공개키
+VAPID_PRIVATE_KEY=생성된_비밀키
+VAPID_SUBJECT=mailto:관리자_이메일@example.com
+```
+
+FastAPI 서버를 재시작한 뒤 로그인하여 **새 알림 → 브라우저 알림 받기**를 누르면 권한 요청이 표시됩니다. 설정만 점검하려면 실제 발송 없이 아래 명령을 실행합니다.
+
+```powershell
+.\.venv\Scripts\python push_delivery.py --dry-run
+```
+
+구독 해제 버튼을 누르거나 브라우저 알림 권한을 차단하면 이후 해당 브라우저로는 발송되지 않습니다. 푸시 서비스가 만료된 구독을 반환하면 서버가 해당 구독을 자동 삭제합니다.
 
 ## 선택 사항: 이메일 알림 발송
 
@@ -117,6 +155,16 @@ SMTP_STARTTLS=true
 ```
 
 개발 화면에서는 `추천 정책`, `알림`, `프로필` 메뉴와 카카오 로그인 흐름을 사용할 수 있습니다. 기존 `kakao_login_server.py`는 초기 Flask 시제품으로 남겨 두었으며, 앞으로는 FastAPI 서버를 실행합니다.
+
+### 관리자 검수
+
+관리자 화면은 카카오 계정 이메일을 기준으로 제한합니다. `.env`에 관리자 이메일을 쉼표로 구분해 설정한 뒤 해당 계정으로 로그아웃·로그인하면 `관리자` 메뉴가 나타납니다.
+
+```text
+ADMIN_EMAILS=admin@example.com,operator@example.com
+```
+
+관리자는 신규·변경 정책을 승인·반려하거나 공개 여부를 바꿀 수 있고, 수집 실행 이력과 사이트별 마지막 수집 시각을 확인할 수 있습니다.
 
 ### 정책 검색·상세보기
 

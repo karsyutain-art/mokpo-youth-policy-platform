@@ -6,6 +6,7 @@ import asyncio
 import hmac
 import json
 import os
+import re
 import secrets
 from contextlib import asynccontextmanager
 from datetime import date, datetime
@@ -66,7 +67,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="목포 청년 정책 API", lifespan=lifespan)
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("FLASK_SECRET_KEY", "change-me"), same_site="lax", https_only=False)
-app.add_middleware(CORSMiddleware, allow_origins=[FRONTEND_URL], allow_credentials=True, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
+app.add_middleware(CORSMiddleware, allow_origins=[FRONTEND_URL], allow_credentials=True, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["Content-Type"])
 
 
 class ProfileInput(BaseModel):
@@ -90,6 +91,16 @@ class WishlistInput(BaseModel):
 
 class NotificationStatusInput(BaseModel):
     status: str
+
+
+class PushSubscriptionKeys(BaseModel):
+    p256dh: str = Field(min_length=20, max_length=255)
+    auth: str = Field(min_length=8, max_length=255)
+
+
+class PushSubscriptionInput(BaseModel):
+    endpoint: str = Field(min_length=20, max_length=700)
+    keys: PushSubscriptionKeys
 
 
 class ChatInput(BaseModel):
@@ -144,6 +155,15 @@ class FormFieldUpdateInput(BaseModel):
 
 class DraftInput(BaseModel):
     instruction: str | None = Field(default=None, max_length=500)
+
+
+class PolicyReviewInput(BaseModel):
+    review_status: str = Field(pattern="^(pending|approved|rejected)$")
+    is_public: bool | None = None
+
+
+class VersionCreateInput(BaseModel):
+    label: str = Field(default="수동 저장", min_length=1, max_length=100)
 
 
 POLICY_REGIONS = ("목포", "전남(목포 포함)", "전국(목포 포함)")
@@ -201,7 +221,7 @@ async def current_user(request: Request, db: AsyncSession) -> dict:
     if not user_id:
         raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
     row = (await db.execute(text("""SELECT id, display_name, legal_name, phone_number, postal_code, address_line1, address_line2,
-        birth_date, residency_city, residency_months, employment_status, income_band, education_level, household_status
+        birth_date, residency_city, residency_months, employment_status, income_band, education_level, household_status, is_admin
         FROM user_profiles WHERE id = :id"""), {"id": user_id})).mappings().first()
     if not row:
         request.session.clear()
@@ -209,6 +229,13 @@ async def current_user(request: Request, db: AsyncSession) -> dict:
     user = dict(row)
     interests = (await db.execute(text("SELECT interest_tag FROM user_interests WHERE user_id = :id ORDER BY interest_tag"), {"id": user_id})).scalars().all()
     user["interests"] = interests
+    return user
+
+
+async def current_admin(request: Request, db: AsyncSession) -> dict:
+    user = await current_user(request, db)
+    if not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="관리자 권한이 필요합니다.")
     return user
 
 
@@ -298,6 +325,50 @@ async def preparation_payload(db: AsyncSession, preparation: dict) -> dict:
     return item
 
 
+def validate_preparation(payload: dict) -> dict:
+    """Return blocking errors and non-blocking recommendations before export."""
+    errors: list[dict[str, str]] = []
+    warnings: list[dict[str, str]] = []
+    if payload.get("policy_changed"):
+        errors.append({"key": "policy_changed", "message": "공고 내용이 바뀌었습니다. 원문을 다시 확인한 뒤 준비 내용을 검토하세요."})
+    if not payload.get("source_confirmed"):
+        errors.append({"key": "source_confirmed", "message": "공식 공고 원문 확인을 완료해 주세요."})
+    for item in payload["requirements"]:
+        if item["is_required"] and item["preparation_status"] not in {"completed", "not_applicable"}:
+            errors.append({"key": f"requirement:{item['id']}", "message": f"필수 준비서류/확인 항목이 완료되지 않았습니다: {item['title']}"})
+        elif not item.get("user_confirmed"):
+            warnings.append({"key": f"requirement_confirm:{item['id']}", "message": f"원문 대조 확인이 필요합니다: {item['title']}"})
+    for field in payload["form_fields"]:
+        value = (field.get("value_text") or "").strip()
+        if field["is_required"] and not value:
+            errors.append({"key": f"field:{field['id']}", "message": f"필수 문항을 입력해 주세요: {field['label']}"})
+        if field.get("max_length") and len(value) > field["max_length"]:
+            errors.append({"key": f"field_length:{field['id']}", "message": f"글자 수 제한을 초과했습니다: {field['label']}"})
+        if field.get("field_type") == "date" and value:
+            try:
+                date.fromisoformat(value)
+            except ValueError:
+                errors.append({"key": f"field_date:{field['id']}", "message": f"날짜 형식이 올바르지 않습니다: {field['label']}"})
+        if "연락처" in field["label"] and value and not re.fullmatch(r"(?:0\d{1,2}-?\d{3,4}-?\d{4})", value):
+            errors.append({"key": f"field_phone:{field['id']}", "message": f"연락처 형식을 확인해 주세요: {field['label']}"})
+        if value and not field.get("user_confirmed"):
+            warnings.append({"key": f"field_confirm:{field['id']}", "message": f"입력 내용을 확인해 주세요: {field['label']}"})
+    return {"ready": not errors, "errors": errors, "warnings": warnings}
+
+
+async def save_preparation_version(db: AsyncSession, preparation: dict, label: str) -> int:
+    payload = await preparation_payload(db, preparation)
+    result = await db.execute(text("""INSERT INTO application_preparation_versions
+        (preparation_id, version_label, requirements_json, form_fields_json, created_at)
+        VALUES (:preparation_id, :label, CAST(:requirements AS JSON), CAST(:form_fields AS JSON), :now)"""), {
+            "preparation_id": preparation["id"], "label": label,
+            "requirements": json.dumps(payload["requirements"], ensure_ascii=False, default=str),
+            "form_fields": json.dumps(payload["form_fields"], ensure_ascii=False, default=str),
+            "now": datetime.now().replace(microsecond=0),
+        })
+    return int(result.lastrowid)
+
+
 @app.get("/api/health")
 async def health() -> dict[str, str]:
     async with SessionLocal() as db:
@@ -356,11 +427,14 @@ async def search_policies(
     region: str = Query(default="", max_length=50),
     recruitment: str = Query(default="open", pattern="^(open|closed|all)$"),
     age: int | None = Query(default=None, ge=0, le=120),
+    employment_status: str = Query(default="", max_length=50),
+    income_band: str = Query(default="", max_length=50),
+    education_level: str = Query(default="", max_length=50),
     limit: int = Query(default=30, ge=1, le=POLICY_SEARCH_LIMIT),
     offset: int = Query(default=0, ge=0),
 ):
     """Search policies that a Mokpo resident may apply for."""
-    where = ["target_region IN ('목포', '전남(목포 포함)', '전국(목포 포함)')"]
+    where = ["target_region IN ('목포', '전남(목포 포함)', '전국(목포 포함)')", "review_status = 'approved'", "is_public = TRUE"]
     params: dict[str, object] = {"limit": limit, "offset": offset}
     normalized_q = q.strip()
     if normalized_q:
@@ -390,6 +464,26 @@ async def search_policies(
         where.append("(min_age IS NULL OR min_age <= :age)")
         where.append("(max_age IS NULL OR max_age >= :age)")
         params["age"] = age
+    condition_filters = {
+        "employment_status": (employment_status, PROFILE_OPTIONS["employment_status"], {
+            "구직 중": "구직", "재직 중": "재직", "창업/사업자": "창업",
+        }),
+        "income_band": (income_band, PROFILE_OPTIONS["income_band"], {
+            "중위소득 50% 이하": "중위소득", "중위소득 50~100%": "중위소득",
+            "중위소득 100~150%": "중위소득", "중위소득 150% 초과": "중위소득", "확인 어려움": "소득",
+        }),
+        "education_level": (education_level, PROFILE_OPTIONS["education_level"], {
+            "고졸 이하": "고졸", "대학 재학": "재학", "대학 휴학": "휴학", "대학 졸업": "졸업", "대학원": "대학원", "기타": "학력",
+        }),
+    }
+    for field, (value, allowed, aliases) in condition_filters.items():
+        if not value:
+            continue
+        if value not in allowed:
+            raise HTTPException(status_code=400, detail=f"지원하지 않는 {field} 값입니다.")
+        key = f"condition_{field}"
+        params[key] = f"%{aliases.get(value, value)}%"
+        where.append(f"(qualification_text LIKE :{key} OR target_condition LIKE :{key} OR content LIKE :{key})")
 
     where_sql = " AND ".join(where)
     count_sql = text(f"SELECT COUNT(*) FROM policy_records WHERE {where_sql}")
@@ -419,7 +513,8 @@ async def policy_detail(policy_id: int):
             await db.execute(
                 text("""SELECT * FROM policy_records
                     WHERE id = :policy_id
-                    AND target_region IN ('목포', '전남(목포 포함)', '전국(목포 포함)')"""),
+                    AND target_region IN ('목포', '전남(목포 포함)', '전국(목포 포함)')
+                    AND review_status = 'approved' AND is_public = TRUE"""),
                 {"policy_id": policy_id},
             )
         ).mappings().first()
@@ -569,6 +664,69 @@ async def get_preparation(preparation_id: int, request: Request):
         user = await current_user(request, db)
         preparation = await owned_preparation(db, preparation_id, user["id"])
         return await preparation_payload(db, preparation)
+
+
+@app.get("/api/preparations/{preparation_id}/validation")
+async def preparation_validation(preparation_id: int, request: Request):
+    async with SessionLocal() as db:
+        user = await current_user(request, db)
+        preparation = await owned_preparation(db, preparation_id, user["id"])
+        return validate_preparation(await preparation_payload(db, preparation))
+
+
+@app.get("/api/preparations/{preparation_id}/versions")
+async def list_preparation_versions(preparation_id: int, request: Request):
+    async with SessionLocal() as db:
+        user = await current_user(request, db)
+        await owned_preparation(db, preparation_id, user["id"])
+        rows = (await db.execute(text("""SELECT id, version_label, created_at
+            FROM application_preparation_versions WHERE preparation_id = :preparation_id
+            ORDER BY id DESC LIMIT 20"""), {"preparation_id": preparation_id})).mappings().all()
+    return [dict(row) for row in rows]
+
+
+@app.post("/api/preparations/{preparation_id}/versions")
+async def create_preparation_version(preparation_id: int, payload: VersionCreateInput, request: Request):
+    async with SessionLocal() as db:
+        user = await current_user(request, db)
+        preparation = await owned_preparation(db, preparation_id, user["id"])
+        version_id = await save_preparation_version(db, preparation, payload.label)
+        await db.commit()
+    return {"id": version_id, "saved": True}
+
+
+@app.post("/api/preparations/{preparation_id}/versions/{version_id}/restore")
+async def restore_preparation_version(preparation_id: int, version_id: int, request: Request):
+    async with SessionLocal() as db:
+        user = await current_user(request, db)
+        preparation = await owned_preparation(db, preparation_id, user["id"])
+        row = (await db.execute(text("""SELECT requirements_json, form_fields_json FROM application_preparation_versions
+            WHERE id = :version_id AND preparation_id = :preparation_id"""), {"version_id": version_id, "preparation_id": preparation_id})).mappings().first()
+        if row is None:
+            raise HTTPException(status_code=404, detail="저장 버전을 찾지 못했습니다.")
+        requirements = row["requirements_json"] if isinstance(row["requirements_json"], list) else json.loads(row["requirements_json"])
+        fields = row["form_fields_json"] if isinstance(row["form_fields_json"], list) else json.loads(row["form_fields_json"])
+        await db.execute(text("DELETE FROM application_requirements WHERE preparation_id = :preparation_id"), {"preparation_id": preparation_id})
+        await db.execute(text("DELETE FROM application_form_fields WHERE preparation_id = :preparation_id"), {"preparation_id": preparation_id})
+        now = datetime.now().replace(microsecond=0)
+        for index, item in enumerate(requirements):
+            await db.execute(text("""INSERT INTO application_requirements
+                (preparation_id, title, is_required, issuing_organization, validity_text, submission_format,
+                 evidence_text, preparation_status, user_note, source_type, extraction_confidence,
+                 user_confirmed, sort_order, created_at, updated_at)
+                VALUES (:preparation_id, :title, :is_required, :issuing_organization, :validity_text, :submission_format,
+                 :evidence_text, :preparation_status, :user_note, :source_type, :extraction_confidence,
+                 :user_confirmed, :sort_order, :now, :now)"""), {**item, "preparation_id": preparation_id, "sort_order": index, "now": now})
+        for index, item in enumerate(fields):
+            await db.execute(text("""INSERT INTO application_form_fields
+                (preparation_id, label, field_type, is_required, max_length, source_evidence, source_type,
+                 autofill_profile_key, value_text, auto_filled, user_confirmed, sort_order, created_at, updated_at)
+                VALUES (:preparation_id, :label, :field_type, :is_required, :max_length, :source_evidence, :source_type,
+                 :autofill_profile_key, :value_text, :auto_filled, :user_confirmed, :sort_order, :now, :now)"""), {**item, "preparation_id": preparation_id, "sort_order": index, "now": now})
+        await db.execute(text("UPDATE application_preparations SET updated_at = :now WHERE id = :id"), {"id": preparation["id"], "now": now})
+        await db.commit()
+        restored = await owned_preparation(db, preparation_id, user["id"])
+        return await preparation_payload(db, restored)
 
 
 @app.put("/api/preparations/{preparation_id}")
@@ -844,17 +1002,30 @@ async def kakao_callback(request: Request):
             account_response = await client.get("https://kapi.kakao.com/v2/user/me", headers={"Authorization": f"Bearer {token}"})
             account_response.raise_for_status()
             kakao_user = account_response.json()
+    except httpx.HTTPStatusError as error:
+        # 키·인가 코드는 노출하지 않고, 카카오의 표준 오류 유형만 프론트에 전달한다.
+        try:
+            reason = error.response.json().get("error", "request_failed")
+        except ValueError:
+            reason = "request_failed"
+        safe_reason = reason if reason in {"invalid_client", "invalid_grant", "invalid_request", "unauthorized_client"} else "request_failed"
+        step = "token" if "oauth/token" in str(error.request.url) else "profile"
+        return RedirectResponse(f"{FRONTEND_URL}/?login_error=kakao&step={step}&reason={safe_reason}")
     except (httpx.HTTPError, KeyError):
-        return RedirectResponse(f"{FRONTEND_URL}/?login_error=kakao")
+        return RedirectResponse(f"{FRONTEND_URL}/?login_error=kakao&step=request&reason=request_failed")
     account = kakao_user.get("kakao_account", {})
     nickname = (account.get("profile") or {}).get("nickname") or "카카오 사용자"
+    email = account.get("email")
+    admin_emails = {value.strip().lower() for value in os.getenv("ADMIN_EMAILS", "").split(",") if value.strip()}
+    is_admin = bool(email and email.lower() in admin_emails)
     now = datetime.now().replace(microsecond=0)
     async with SessionLocal() as db:
         await db.execute(
-            text("""INSERT INTO user_profiles (kakao_user_id, display_name, email, residency_city, created_at, updated_at)
-            VALUES (:kakao_user_id, :display_name, :email, '목포', :now, :now)
-            ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), email = VALUES(email), updated_at = VALUES(updated_at)"""),
-            {"kakao_user_id": int(kakao_user["id"]), "display_name": nickname, "email": account.get("email"), "now": now},
+            text("""INSERT INTO user_profiles (kakao_user_id, display_name, email, is_admin, residency_city, created_at, updated_at)
+            VALUES (:kakao_user_id, :display_name, :email, :is_admin, '목포', :now, :now)
+            ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), email = VALUES(email),
+                is_admin = GREATEST(is_admin, VALUES(is_admin)), updated_at = VALUES(updated_at)"""),
+            {"kakao_user_id": int(kakao_user["id"]), "display_name": nickname, "email": email, "is_admin": is_admin, "now": now},
         )
         user_id = (await db.execute(text("SELECT id FROM user_profiles WHERE kakao_user_id = :kakao_user_id"), {"kakao_user_id": int(kakao_user["id"])})).scalar_one()
         await db.commit()
@@ -1024,6 +1195,46 @@ async def update_notification(candidate_id: int, payload: NotificationStatusInpu
     return {"ok": True, "status": payload.status}
 
 
+@app.get("/api/push/public-key")
+async def push_public_key():
+    key = os.getenv("VAPID_PUBLIC_KEY", "").strip()
+    return {"enabled": bool(key), "public_key": key or None}
+
+
+@app.post("/api/push/subscriptions")
+async def create_push_subscription(payload: PushSubscriptionInput, request: Request):
+    if not payload.endpoint.startswith("https://"):
+        raise HTTPException(status_code=400, detail="웹 푸시 endpoint는 HTTPS 주소여야 합니다.")
+    if not os.getenv("VAPID_PUBLIC_KEY", "").strip() or not os.getenv("VAPID_PRIVATE_KEY", "").strip():
+        raise HTTPException(status_code=503, detail="서버의 웹 푸시 VAPID 키가 아직 설정되지 않았습니다.")
+    now = datetime.now().replace(microsecond=0)
+    async with SessionLocal() as db:
+        user = await current_user(request, db)
+        await db.execute(
+            text("""INSERT INTO push_subscriptions
+                (user_id, endpoint, p256dh, auth_secret, content_encoding, created_at, updated_at)
+                VALUES (:user_id, :endpoint, :p256dh, :auth_secret, 'aes128gcm', :now, :now)
+                ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), p256dh=VALUES(p256dh),
+                    auth_secret=VALUES(auth_secret), content_encoding=VALUES(content_encoding), updated_at=VALUES(updated_at)"""),
+            {"user_id": user["id"], "endpoint": payload.endpoint, "p256dh": payload.keys.p256dh,
+             "auth_secret": payload.keys.auth, "now": now},
+        )
+        await db.commit()
+    return {"subscribed": True}
+
+
+@app.delete("/api/push/subscriptions")
+async def remove_push_subscription(payload: PushSubscriptionInput, request: Request):
+    async with SessionLocal() as db:
+        user = await current_user(request, db)
+        await db.execute(
+            text("DELETE FROM push_subscriptions WHERE user_id = :user_id AND endpoint = :endpoint"),
+            {"user_id": user["id"], "endpoint": payload.endpoint},
+        )
+        await db.commit()
+    return {"subscribed": False}
+
+
 @app.get("/api/policies/recommended")
 async def recommended_policies(request: Request):
     async with SessionLocal() as db:
@@ -1032,6 +1243,7 @@ async def recommended_policies(request: Request):
             return []
         rows = (await db.execute(text("""SELECT * FROM policy_records
             WHERE target_region IN ('목포', '전남(목포 포함)', '전국(목포 포함)')
+            AND review_status = 'approved' AND is_public = TRUE
             AND (application_end_date IS NULL OR application_end_date >= CURDATE())
             ORDER BY application_end_date IS NULL DESC, application_end_date ASC, updated_at DESC"""))).mappings().all()
     return [serialize_policy(dict(row)) for row in rows if eligible_for_policy(user, dict(row), set(user["interests"]))[0]]
@@ -1053,3 +1265,46 @@ async def notifications(request: Request):
               AND (wishlist.user_id IS NULL OR wishlist.notifications_enabled = TRUE)
             ORDER BY candidate.created_at DESC"""), {"user_id": user["id"]})).mappings().all()
     return [dict(row) for row in rows]
+
+
+@app.get("/api/admin/overview")
+async def admin_overview(request: Request):
+    async with SessionLocal() as db:
+        await current_admin(request, db)
+        policy_counts = (await db.execute(text("""SELECT review_status, is_public, COUNT(*) AS count
+            FROM policy_records GROUP BY review_status, is_public"""))).mappings().all()
+        source_counts = (await db.execute(text("""SELECT source_site, COUNT(*) AS count, MAX(last_seen_at) AS last_seen_at
+            FROM policy_records GROUP BY source_site ORDER BY count DESC, source_site"""))).mappings().all()
+        runs = (await db.execute(text("""SELECT id, run_type, status, started_at, finished_at, message
+            FROM collection_runs ORDER BY id DESC LIMIT 20"""))).mappings().all()
+    return {"policy_counts": [dict(row) for row in policy_counts], "sources": [dict(row) for row in source_counts], "runs": [dict(row) for row in runs]}
+
+
+@app.get("/api/admin/policies")
+async def admin_policies(request: Request, status: str = Query(default="pending", pattern="^(pending|approved|rejected|all)$")):
+    async with SessionLocal() as db:
+        await current_admin(request, db)
+        params: dict[str, object] = {}
+        where = ""
+        if status != "all":
+            where = "WHERE review_status = :status"
+            params["status"] = status
+        rows = (await db.execute(text(f"""SELECT * FROM policy_records {where}
+            ORDER BY updated_at DESC LIMIT 100"""), params)).mappings().all()
+    return [serialize_policy(dict(row), detail=True) | {"review_status": row["review_status"], "is_public": bool(row["is_public"]), "reviewed_at": row["reviewed_at"]} for row in rows]
+
+
+@app.patch("/api/admin/policies/{policy_id}")
+async def review_policy(policy_id: int, payload: PolicyReviewInput, request: Request):
+    async with SessionLocal() as db:
+        admin = await current_admin(request, db)
+        is_public = payload.is_public if payload.is_public is not None else payload.review_status == "approved"
+        result = await db.execute(text("""UPDATE policy_records
+            SET review_status = :review_status, is_public = :is_public,
+                reviewed_at = :now, reviewed_by = :reviewed_by
+            WHERE id = :policy_id"""), {"review_status": payload.review_status, "is_public": is_public,
+                "now": datetime.now().replace(microsecond=0), "reviewed_by": admin["id"], "policy_id": policy_id})
+        await db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="정책 정보를 찾지 못했습니다.")
+    return {"ok": True, "review_status": payload.review_status, "is_public": is_public}

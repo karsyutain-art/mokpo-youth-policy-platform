@@ -21,6 +21,10 @@ CREATE TABLE IF NOT EXISTS policy_records (
     attachment_files TEXT NULL,
     attachment_text LONGTEXT NULL,
     attachment_status TEXT NULL,
+    review_status ENUM('pending', 'approved', 'rejected') NOT NULL DEFAULT 'approved',
+    is_public BOOLEAN NOT NULL DEFAULT TRUE,
+    reviewed_at DATETIME NULL,
+    reviewed_by BIGINT UNSIGNED NULL,
     content_hash CHAR(64) NOT NULL,
     original_link VARCHAR(1500) NULL,
     first_seen_at DATETIME NOT NULL,
@@ -66,6 +70,7 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     income_band VARCHAR(50) NULL,
     education_level VARCHAR(50) NULL,
     household_status VARCHAR(50) NULL,
+    is_admin BOOLEAN NOT NULL DEFAULT FALSE,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
@@ -130,6 +135,17 @@ CREATE TABLE IF NOT EXISTS policy_chat_messages (
     CONSTRAINT fk_policy_chat_messages_user
       FOREIGN KEY (user_id) REFERENCES user_profiles(id)
       ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS collection_runs (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    run_type ENUM('collection', 'postprocess') NOT NULL,
+    status ENUM('running', 'succeeded', 'failed') NOT NULL,
+    started_at DATETIME NOT NULL,
+    finished_at DATETIME NULL,
+    message TEXT NULL,
+    PRIMARY KEY (id),
+    KEY idx_collection_runs_started (started_at)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS application_preparations (
@@ -202,6 +218,20 @@ CREATE TABLE IF NOT EXISTS application_form_fields (
       ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+CREATE TABLE IF NOT EXISTS application_preparation_versions (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    preparation_id BIGINT UNSIGNED NOT NULL,
+    version_label VARCHAR(100) NOT NULL,
+    requirements_json JSON NOT NULL,
+    form_fields_json JSON NOT NULL,
+    created_at DATETIME NOT NULL,
+    PRIMARY KEY (id),
+    KEY idx_application_preparation_versions_preparation (preparation_id, id DESC),
+    CONSTRAINT fk_application_preparation_versions_preparation
+      FOREIGN KEY (preparation_id) REFERENCES application_preparations(id)
+      ON DELETE CASCADE
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS policy_match_candidates (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     event_id BIGINT UNSIGNED NOT NULL,
@@ -227,8 +257,8 @@ CREATE TABLE IF NOT EXISTS policy_match_candidates (
 CREATE TABLE IF NOT EXISTS notification_deliveries (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     candidate_id BIGINT UNSIGNED NOT NULL,
-    channel ENUM('email') NOT NULL,
-    destination VARCHAR(255) NOT NULL,
+    channel ENUM('email', 'web_push') NOT NULL,
+    destination VARCHAR(1000) NOT NULL,
     status ENUM('sent', 'failed', 'skipped') NOT NULL,
     error_message VARCHAR(1000) NULL,
     sent_at DATETIME NULL,
@@ -238,5 +268,22 @@ CREATE TABLE IF NOT EXISTS notification_deliveries (
     KEY idx_notification_deliveries_status (status, created_at),
     CONSTRAINT fk_notification_deliveries_candidate
       FOREIGN KEY (candidate_id) REFERENCES policy_match_candidates(id)
+      ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    user_id BIGINT UNSIGNED NOT NULL,
+    endpoint VARCHAR(700) NOT NULL,
+    p256dh VARCHAR(255) NOT NULL,
+    auth_secret VARCHAR(255) NOT NULL,
+    content_encoding VARCHAR(30) NOT NULL DEFAULT 'aes128gcm',
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_push_subscriptions_user (user_id),
+    UNIQUE KEY uq_push_subscriptions_endpoint (endpoint),
+    CONSTRAINT fk_push_subscriptions_user
+      FOREIGN KEY (user_id) REFERENCES user_profiles(id)
       ON DELETE CASCADE
 ) ENGINE=InnoDB;

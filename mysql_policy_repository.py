@@ -56,6 +56,17 @@ class MySQLPolicyRepository:
             cursor.execute("SHOW INDEX FROM policy_change_events WHERE Key_name = 'uq_policy_change_events_event_key'")
             if cursor.fetchone() is None:
                 cursor.execute("ALTER TABLE policy_change_events ADD UNIQUE KEY uq_policy_change_events_event_key (event_key)")
+            cursor.execute("SHOW COLUMNS FROM policy_records")
+            policy_columns = {row[0] for row in cursor.fetchall()}
+            policy_columns_to_add = {
+                "review_status": "ENUM('pending', 'approved', 'rejected') NOT NULL DEFAULT 'approved' AFTER attachment_status",
+                "is_public": "BOOLEAN NOT NULL DEFAULT TRUE AFTER review_status",
+                "reviewed_at": "DATETIME NULL AFTER is_public",
+                "reviewed_by": "BIGINT UNSIGNED NULL AFTER reviewed_at",
+            }
+            for column, definition in policy_columns_to_add.items():
+                if column not in policy_columns:
+                    cursor.execute(f"ALTER TABLE policy_records ADD COLUMN {column} {definition}")
             # 이전 단계에서 생성된 프로필 테이블도 카카오 로그인용 구조로 안전하게 확장한다.
             cursor.execute("SHOW COLUMNS FROM user_profiles")
             columns = {row[0] for row in cursor.fetchall()}
@@ -74,6 +85,7 @@ class MySQLPolicyRepository:
                 "income_band": "VARCHAR(50) NULL AFTER employment_status",
                 "education_level": "VARCHAR(50) NULL AFTER income_band",
                 "household_status": "VARCHAR(50) NULL AFTER education_level",
+                "is_admin": "BOOLEAN NOT NULL DEFAULT FALSE AFTER household_status",
             }
             for column, definition in profile_columns.items():
                 if column not in columns:
@@ -92,6 +104,10 @@ class MySQLPolicyRepository:
             form_columns = {row[0] for row in cursor.fetchall()}
             if form_columns and "source_type" not in form_columns:
                 cursor.execute("ALTER TABLE application_form_fields ADD COLUMN source_type ENUM('manual', 'extracted') NOT NULL DEFAULT 'manual' AFTER source_evidence")
+            cursor.execute("SHOW TABLES LIKE 'notification_deliveries'")
+            if cursor.fetchone() is not None:
+                cursor.execute("ALTER TABLE notification_deliveries MODIFY channel ENUM('email', 'web_push') NOT NULL")
+                cursor.execute("ALTER TABLE notification_deliveries MODIFY destination VARCHAR(1000) NOT NULL")
             connection.commit()
         finally:
             cursor.close()
@@ -123,13 +139,13 @@ class MySQLPolicyRepository:
                             qualification_text, min_age, max_age, residency_condition, period_text, application_start_date,
                             application_end_date, content, application_method, organization, attachment_links,
                             attachment_files, attachment_text, attachment_status, content_hash, original_link,
-                            first_seen_at, last_seen_at, updated_at
+                            review_status, is_public, first_seen_at, last_seen_at, updated_at
                         ) VALUES (
                             %(record_key)s, %(source_site)s, %(source_record_id)s, %(category)s, %(title)s, %(target_region)s, %(target_condition)s,
                             %(qualification_text)s, %(min_age)s, %(max_age)s, %(residency_condition)s, %(period)s, %(application_start_date)s,
                             %(application_end_date)s, %(content)s, %(application_method)s, %(organization)s, %(attachment_links)s,
                             %(attachment_files)s, %(attachment_text)s, %(attachment_status)s, %(content_hash)s, %(original_link)s,
-                            %(now)s, %(now)s, %(now)s
+                            'pending', FALSE, %(now)s, %(now)s, %(now)s
                         )""",
                         params,
                     )
@@ -150,6 +166,7 @@ class MySQLPolicyRepository:
                             attachment_links=%(attachment_links)s, attachment_files=%(attachment_files)s,
                             attachment_text=%(attachment_text)s, attachment_status=%(attachment_status)s,
                             content_hash=%(content_hash)s, original_link=%(original_link)s,
+                            review_status='pending', is_public=FALSE, reviewed_at=NULL, reviewed_by=NULL,
                             last_seen_at=%(now)s, updated_at=%(now)s
                             WHERE id=%(policy_id)s""",
                         {**params, "policy_id": existing["id"]},
