@@ -227,7 +227,40 @@ Copy-Item .env.example .env
 docker compose up --build -d
 ```
 
-서비스는 기본적으로 `http://localhost:8080`에서 열립니다. 실제 도메인으로 배포할 때는 `PUBLIC_BASE_URL`과 `KAKAO_REDIRECT_URI`를 `https://도메인`으로 바꾸고, 카카오 개발자 콘솔에도 동일한 리다이렉트 URI를 등록해야 합니다. 이 구성은 웹·API·MySQL을 분리하고 웹 서버가 API와 카카오 로그인 경로를 안전하게 중계합니다.
+서비스는 기본적으로 `http://localhost:8080`에서 열립니다. 이 구성은 웹·API·MySQL뿐 아니라 매일 오전 3시(Asia/Seoul)에 수집·매칭·알림·RAG 갱신을 수행하는 `collector` 컨테이너를 함께 실행합니다. 정책 원문·첨부파일·RAG 인덱스는 API와 collector가 공유하는 Docker 볼륨에 보관됩니다.
+
+Windows에서 Docker 명령을 직접 입력하지 않고 실행하려면 [실행파일 배포 안내](실행파일_배포_안내.md)를 참고하세요. build_launcher.ps1을 실행하면 release/MokpoYouthPolicyLauncher.exe가 생성됩니다.
+
+### HTTPS 운영 배포
+
+외부 공개 시에는 Ubuntu 등 Docker가 설치된 서버와 연결된 도메인이 필요합니다. 도메인의 A/AAAA 레코드를 서버 IP로 연결하고, 서버 방화벽에서 TCP 80·443을 열어 둔 후 서버에서 다음처럼 설정합니다. Caddy가 Let's Encrypt 인증서를 자동 발급·갱신하고, 웹 푸시·카카오 로그인에 필요한 HTTPS를 제공합니다.
+
+```env
+DOMAIN=policy.example.com
+PUBLIC_BASE_URL=https://policy.example.com
+KAKAO_REDIRECT_URI=https://policy.example.com/auth/kakao/callback
+SESSION_HTTPS_ONLY=true
+```
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.production.yml up --build -d
+docker compose -f docker-compose.yml -f docker-compose.production.yml ps
+```
+
+카카오 개발자 콘솔에도 아래를 **정확히 동일하게** 등록해야 합니다.
+
+```text
+https://policy.example.com/auth/kakao/callback
+```
+
+운영 서버에서는 포트 3306을 외부에 열지 않습니다. 백업은 정기적으로 별도 보관하고, 배포 상태는 아래처럼 확인합니다.
+
+```bash
+docker compose logs --tail=100 api collector caddy
+docker compose exec mysql mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" youth_policy > youth_policy_backup.sql
+```
+
+도메인과 서버가 아직 없다면 로컬 Docker 실행까지만 가능하며, 웹 푸시는 `localhost`에서 테스트할 수 있습니다.
 
 준비 건과 체크리스트는 로그인한 소유자만 조회·변경·삭제할 수 있습니다. 정책 원문의 `content_hash`가 준비 시작 당시와 달라지면 기존 체크리스트를 보존하면서 공고 변경 확인 안내를 표시합니다.
 

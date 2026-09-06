@@ -34,7 +34,9 @@ from youth_data_collector import load_local_env
 load_local_env()
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:5000")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", BACKEND_URL)
 KAKAO_REDIRECT_URI = os.getenv("KAKAO_REDIRECT_URI", f"{BACKEND_URL}/auth/kakao/callback")
+SESSION_HTTPS_ONLY = os.getenv("SESSION_HTTPS_ONLY", str(PUBLIC_BASE_URL.startswith("https://"))).lower() == "true"
 
 database_url = URL.create(
     "mysql+aiomysql",
@@ -66,7 +68,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="목포 청년 정책 API", lifespan=lifespan)
-app.add_middleware(SessionMiddleware, secret_key=os.getenv("FLASK_SECRET_KEY", "change-me"), same_site="lax", https_only=False)
+app.add_middleware(SessionMiddleware, secret_key=os.getenv("FLASK_SECRET_KEY", "change-me"), same_site="lax", https_only=SESSION_HTTPS_ONLY)
 app.add_middleware(CORSMiddleware, allow_origins=[FRONTEND_URL], allow_credentials=True, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["Content-Type"])
 
 
