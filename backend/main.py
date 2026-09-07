@@ -25,7 +25,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from application_extractor import extract_requirement_candidates
 from application_form_extractor import extract_form_field_candidates
 from hwpx_exporter import build_hwpx
-from mysql_policy_repository import MySQLPolicyRepository
+from postgres_policy_repository import PostgresPolicyRepository
 from policy_matcher import TAG_KEYWORDS, PolicyMatcher, diagnose_eligibility, eligible_for_policy
 from rag_policy_search import PolicyRAG
 from youth_data_collector import load_local_env
@@ -39,20 +39,19 @@ KAKAO_REDIRECT_URI = os.getenv("KAKAO_REDIRECT_URI", f"{BACKEND_URL}/auth/kakao/
 SESSION_HTTPS_ONLY = os.getenv("SESSION_HTTPS_ONLY", str(PUBLIC_BASE_URL.startswith("https://"))).lower() == "true"
 
 database_url = URL.create(
-    "mysql+aiomysql",
-    username=os.getenv("MYSQL_USER", "root"),
-    password=os.getenv("MYSQL_PASSWORD", ""),
-    host=os.getenv("MYSQL_HOST", "127.0.0.1"),
-    port=int(os.getenv("MYSQL_PORT", "3306")),
-    database=os.getenv("MYSQL_DATABASE", "youth_policy"),
-    query={"charset": "utf8mb4"},
+    "postgresql+asyncpg",
+    username=os.getenv("POSTGRES_USER", "youth_policy"),
+    password=os.getenv("POSTGRES_PASSWORD") or os.getenv("MYSQL_PASSWORD", ""),
+    host=os.getenv("POSTGRES_HOST", "127.0.0.1"),
+    port=int(os.getenv("POSTGRES_PORT", "55432")),
+    database=os.getenv("POSTGRES_DB", "youth_policy"),
 )
 engine = create_async_engine(database_url, pool_pre_ping=True)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 
 def initialize_schema() -> None:
-    repository = MySQLPolicyRepository()
+    repository = PostgresPolicyRepository()
     connection = repository.connect()
     try:
         repository.initialize(connection)
@@ -362,13 +361,14 @@ async def save_preparation_version(db: AsyncSession, preparation: dict, label: s
     payload = await preparation_payload(db, preparation)
     result = await db.execute(text("""INSERT INTO application_preparation_versions
         (preparation_id, version_label, requirements_json, form_fields_json, created_at)
-        VALUES (:preparation_id, :label, CAST(:requirements AS JSON), CAST(:form_fields AS JSON), :now)"""), {
+        VALUES (:preparation_id, :label, CAST(:requirements AS JSONB), CAST(:form_fields AS JSONB), :now)
+        RETURNING id"""), {
             "preparation_id": preparation["id"], "label": label,
             "requirements": json.dumps(payload["requirements"], ensure_ascii=False, default=str),
             "form_fields": json.dumps(payload["form_fields"], ensure_ascii=False, default=str),
             "now": datetime.now().replace(microsecond=0),
         })
-    return int(result.lastrowid)
+    return int(result.scalar_one())
 
 
 @app.get("/api/health")
@@ -388,7 +388,7 @@ async def policy_chat(payload: ChatInput, request: Request):
             await db.execute(
                 text("""INSERT INTO policy_chat_messages
                     (user_id, question, answer, sources_json, ai_generated, model_name, created_at)
-                    VALUES (:user_id, :question, :answer, CAST(:sources_json AS JSON), :generated, :model_name, NOW())"""),
+                    VALUES (:user_id, :question, :answer, CAST(:sources_json AS JSONB), :generated, :model_name, NOW())"""),
                 {"user_id": user["id"], "question": payload.question.strip(), "answer": result["answer"],
                  "sources_json": json.dumps(result.get("sources", []), ensure_ascii=False, default=str),
                  "generated": bool(result.get("generated")), "model_name": result.get("model")},
@@ -458,10 +458,10 @@ async def search_policies(
         where.append("target_region = :region")
         params["region"] = region
     if recruitment == "open":
-        where.append("(application_end_date IS NULL OR application_end_date >= CURDATE())")
-        where.append("(application_start_date IS NULL OR application_start_date <= CURDATE())")
+        where.append("(application_end_date IS NULL OR application_end_date >= CURRENT_DATE)")
+        where.append("(application_start_date IS NULL OR application_start_date <= CURRENT_DATE)")
     elif recruitment == "closed":
-        where.append("application_end_date < CURDATE()")
+        where.append("application_end_date < CURRENT_DATE")
     if age is not None:
         where.append("(min_age IS NULL OR min_age <= :age)")
         where.append("(max_age IS NULL OR max_age >= :age)")
@@ -552,14 +552,14 @@ async def create_preparation(policy_id: int, request: Request):
                     (user_id, policy_id, policy_title_snapshot, policy_content_hash_snapshot,
                      original_link_snapshot, policy_verified_at, status, source_confirmed, created_at, updated_at)
                     VALUES (:user_id, :policy_id, :title, :content_hash, :original_link,
-                            :verified_at, 'draft', FALSE, :now, :now)"""),
+                            :verified_at, 'draft', FALSE, :now, :now) RETURNING id"""),
                 {
                     "user_id": user["id"], "policy_id": policy_id, "title": policy["title"],
                     "content_hash": policy["content_hash"], "original_link": policy.get("original_link"),
                     "verified_at": policy.get("last_seen_at"), "now": now,
                 },
             )
-            existing_id = result.lastrowid
+            existing_id = result.scalar_one()
             extracted = extract_requirement_candidates(policy)
             initial_requirements = [*default_requirements(policy), *extracted]
             for index, requirement in enumerate(initial_requirements):
@@ -779,12 +779,12 @@ async def create_requirement(preparation_id: int, payload: RequirementCreateInpu
                  source_type, user_confirmed, sort_order, created_at, updated_at)
                 VALUES (:preparation_id, :title, :is_required, :issuing_organization, :validity_text,
                         :submission_format, :evidence_text, 'not_started', :user_note,
-                        'manual', TRUE, :sort_order, :now, :now)"""),
+                        'manual', TRUE, :sort_order, :now, :now) RETURNING id"""),
             {"preparation_id": preparation_id, "sort_order": sort_order, "now": now, **values},
         )
         await db.execute(text("UPDATE application_preparations SET updated_at = :now WHERE id = :id"), {"id": preparation_id, "now": now})
         await db.commit()
-        requirement_id = result.lastrowid
+        requirement_id = result.scalar_one()
         row = (
             await db.execute(text("SELECT * FROM application_requirements WHERE id = :id"), {"id": requirement_id})
         ).mappings().one()
@@ -862,10 +862,10 @@ async def create_form_field(preparation_id: int, payload: FormFieldCreateInput, 
             (preparation_id, label, field_type, is_required, max_length, source_evidence, source_type, autofill_profile_key,
              value_text, auto_filled, user_confirmed, sort_order, created_at, updated_at)
             VALUES (:preparation_id, :label, :field_type, :is_required, :max_length, :source_evidence, 'manual', :profile_key,
-                    :value_text, :auto_filled, FALSE, :sort_order, :now, :now)"""),
+                    :value_text, :auto_filled, FALSE, :sort_order, :now, :now) RETURNING id"""),
             {"preparation_id": preparation_id, "label": payload.label, "field_type": payload.field_type, "is_required": payload.is_required, "max_length": payload.max_length, "source_evidence": payload.source_evidence, "profile_key": profile_key, "value_text": value, "auto_filled": bool(profile_key), "sort_order": sort_order, "now": now})
         await db.commit()
-        row = (await db.execute(text("SELECT * FROM application_form_fields WHERE id = :id"), {"id": result.lastrowid})).mappings().one()
+        row = (await db.execute(text("SELECT * FROM application_form_fields WHERE id = :id"), {"id": result.scalar_one()})).mappings().one()
     return dict(row)
 
 
@@ -1025,8 +1025,8 @@ async def kakao_callback(request: Request):
         await db.execute(
             text("""INSERT INTO user_profiles (kakao_user_id, display_name, email, is_admin, residency_city, created_at, updated_at)
             VALUES (:kakao_user_id, :display_name, :email, :is_admin, '목포', :now, :now)
-            ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), email = VALUES(email),
-                is_admin = GREATEST(is_admin, VALUES(is_admin)), updated_at = VALUES(updated_at)"""),
+            ON CONFLICT (kakao_user_id) DO UPDATE SET display_name = EXCLUDED.display_name, email = EXCLUDED.email,
+                is_admin = user_profiles.is_admin OR EXCLUDED.is_admin, updated_at = EXCLUDED.updated_at"""),
             {"kakao_user_id": int(kakao_user["id"]), "display_name": nickname, "email": email, "is_admin": is_admin, "now": now},
         )
         user_id = (await db.execute(text("SELECT id FROM user_profiles WHERE kakao_user_id = :kakao_user_id"), {"kakao_user_id": int(kakao_user["id"])})).scalar_one()
@@ -1138,7 +1138,8 @@ async def save_wishlist(policy_id: int, payload: WishlistInput, request: Request
         await db.execute(
             text("""INSERT INTO policy_wishlists (user_id, policy_id, notifications_enabled, created_at, updated_at)
                 VALUES (:user_id, :policy_id, :notifications_enabled, :now, :now)
-                ON DUPLICATE KEY UPDATE notifications_enabled = VALUES(notifications_enabled), updated_at = VALUES(updated_at)"""),
+                ON CONFLICT (user_id, policy_id) DO UPDATE SET
+                    notifications_enabled = EXCLUDED.notifications_enabled, updated_at = EXCLUDED.updated_at"""),
             {"user_id": user["id"], "policy_id": policy_id, "notifications_enabled": payload.notifications_enabled, "now": now},
         )
         await db.commit()
@@ -1216,8 +1217,8 @@ async def create_push_subscription(payload: PushSubscriptionInput, request: Requ
             text("""INSERT INTO push_subscriptions
                 (user_id, endpoint, p256dh, auth_secret, content_encoding, created_at, updated_at)
                 VALUES (:user_id, :endpoint, :p256dh, :auth_secret, 'aes128gcm', :now, :now)
-                ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), p256dh=VALUES(p256dh),
-                    auth_secret=VALUES(auth_secret), content_encoding=VALUES(content_encoding), updated_at=VALUES(updated_at)"""),
+                ON CONFLICT (endpoint) DO UPDATE SET user_id=EXCLUDED.user_id, p256dh=EXCLUDED.p256dh,
+                    auth_secret=EXCLUDED.auth_secret, content_encoding=EXCLUDED.content_encoding, updated_at=EXCLUDED.updated_at"""),
             {"user_id": user["id"], "endpoint": payload.endpoint, "p256dh": payload.keys.p256dh,
              "auth_secret": payload.keys.auth, "now": now},
         )
@@ -1246,7 +1247,7 @@ async def recommended_policies(request: Request):
         rows = (await db.execute(text("""SELECT * FROM policy_records
             WHERE target_region IN ('목포', '전남(목포 포함)', '전국(목포 포함)')
             AND review_status = 'approved' AND is_public = TRUE
-            AND (application_end_date IS NULL OR application_end_date >= CURDATE())
+            AND (application_end_date IS NULL OR application_end_date >= CURRENT_DATE)
             ORDER BY application_end_date IS NULL DESC, application_end_date ASC, updated_at DESC"""))).mappings().all()
     return [serialize_policy(dict(row)) for row in rows if eligible_for_policy(user, dict(row), set(user["interests"]))[0]]
 

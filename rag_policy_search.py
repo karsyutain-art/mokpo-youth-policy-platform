@@ -1,29 +1,22 @@
-"""Build and query a lightweight FAISS HNSW index over policy source text."""
+"""Build and query a pgvector HNSW index over policy source text."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
-import json
+import math
 import os
 import re
 import sys
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-import faiss
-import numpy as np
-
-from mysql_policy_repository import MySQLPolicyRepository
+from postgres_policy_repository import PostgresPolicyRepository
 from youth_data_collector import load_local_env
 
 
 VECTOR_DIMENSION = 384
 EMBEDDING_MODEL = "korean-hashed-char-ngram-v1"
-INDEX_DIR = Path("data/rag")
-INDEX_PATH = INDEX_DIR / "policy_hnsw.faiss"
-METADATA_PATH = INDEX_DIR / "policy_hnsw_metadata.json"
 
 
 def policy_text(policy: dict[str, Any]) -> str:
@@ -67,8 +60,8 @@ def split_chunks(text: str, size: int = 850, overlap: int = 120) -> list[str]:
     return chunks
 
 
-def embed_text(text: str) -> np.ndarray:
-    vector = np.zeros(VECTOR_DIMENSION, dtype="float32")
+def embed_text(text: str) -> list[float]:
+    vector = [0.0] * VECTOR_DIMENSION
     tokens = re.findall(r"[가-힣A-Za-z0-9]+", text.lower())
     features: list[str] = []
     for token in tokens:
@@ -81,41 +74,43 @@ def embed_text(text: str) -> np.ndarray:
         value = int.from_bytes(digest, "little")
         index = value % VECTOR_DIMENSION
         vector[index] += 1.0 if value & (1 << 63) else -1.0
-    norm = np.linalg.norm(vector)
+    norm = math.sqrt(sum(value * value for value in vector))
     if norm:
-        vector /= norm
+        vector = [value / norm for value in vector]
     return vector
+
+
+def vector_literal(vector: list[float]) -> str:
+    return "[" + ",".join(f"{value:.8f}" for value in vector) + "]"
 
 
 class PolicyRAG:
     def __init__(self) -> None:
         load_local_env()
-        self.repository = MySQLPolicyRepository()
+        self.repository = PostgresPolicyRepository()
 
     def rebuild(self) -> dict[str, int]:
         connection = self.repository.connect()
         self.repository.initialize(connection)
-        cursor = connection.cursor(dictionary=True)
+        cursor = connection.cursor()
         try:
             cursor.execute("""SELECT * FROM policy_records
                 WHERE target_region IN ('목포', '전남(목포 포함)', '전국(목포 포함)')
                 ORDER BY id""")
             policies = cursor.fetchall()
             cursor.execute("DELETE FROM policy_chunks")
-            vectors: list[np.ndarray] = []
-            metadata: list[dict[str, int]] = []
+            chunk_count = 0
             now = datetime.now().replace(microsecond=0)
             for policy in policies:
                 for chunk_index, content in enumerate(split_chunks(policy_text(policy))):
                     content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
                     cursor.execute(
                         """INSERT INTO policy_chunks
-                        (policy_id, chunk_index, content, content_hash, embedding_model, vector_dimension, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                        (policy["id"], chunk_index, content, content_hash, EMBEDDING_MODEL, VECTOR_DIMENSION, now),
+                        (policy_id, chunk_index, content, content_hash, embedding_model, vector_dimension, embedding, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s::vector, %s)""",
+                        (policy["id"], chunk_index, content, content_hash, EMBEDDING_MODEL, VECTOR_DIMENSION, vector_literal(embed_text(content)), now),
                     )
-                    metadata.append({"chunk_id": cursor.lastrowid, "policy_id": policy["id"]})
-                    vectors.append(embed_text(content))
+                    chunk_count += 1
             connection.commit()
         except Exception:
             connection.rollback()
@@ -124,58 +119,36 @@ class PolicyRAG:
             cursor.close()
             connection.close()
 
-        index = faiss.IndexHNSWFlat(VECTOR_DIMENSION, 32, faiss.METRIC_INNER_PRODUCT)
-        index.hnsw.efConstruction = 80
-        index.hnsw.efSearch = 64
-        if vectors:
-            index.add(np.vstack(vectors).astype("float32"))
-        INDEX_DIR.mkdir(parents=True, exist_ok=True)
-        temporary_index = INDEX_PATH.with_suffix(".tmp")
-        temporary_metadata = METADATA_PATH.with_suffix(".tmp")
-        faiss.write_index(index, str(temporary_index))
-        temporary_metadata.write_text(json.dumps({"model": EMBEDDING_MODEL, "dimension": VECTOR_DIMENSION, "items": metadata}, ensure_ascii=False), encoding="utf-8")
-        temporary_index.replace(INDEX_PATH)
-        temporary_metadata.replace(METADATA_PATH)
-        return {"policies": len(policies), "chunks": len(metadata)}
+        return {"policies": len(policies), "chunks": chunk_count}
 
     def search(self, question: str, top_k: int = 5, min_score: float = 0.12) -> list[dict[str, Any]]:
-        if not INDEX_PATH.exists() or not METADATA_PATH.exists():
-            self.rebuild()
-        index = faiss.read_index(str(INDEX_PATH))
-        metadata = json.loads(METADATA_PATH.read_text(encoding="utf-8"))["items"]
-        if index.ntotal == 0:
-            return []
-        query = embed_text(question).reshape(1, -1)
-        candidate_count = min(max(top_k * 5, 20), index.ntotal)
-        scores, positions = index.search(query, candidate_count)
-        ranked = [(metadata[position]["chunk_id"], float(score)) for score, position in zip(scores[0], positions[0]) if position >= 0]
-        if not ranked:
-            return []
         connection = self.repository.connect()
-        cursor = connection.cursor(dictionary=True)
+        self.repository.initialize(connection)
+        cursor = connection.cursor()
         try:
-            placeholders = ",".join(["%s"] * len(ranked))
             cursor.execute(
-                f"""SELECT chunk.id AS chunk_id, chunk.content, policy.id AS policy_id,
-                    policy.title, policy.organization, policy.application_end_date, policy.original_link
+                """SELECT chunk.id AS chunk_id, chunk.content, policy.id AS policy_id,
+                    policy.title, policy.organization, policy.application_end_date, policy.original_link,
+                    1 - (chunk.embedding <=> %s::vector) AS score
                     FROM policy_chunks AS chunk
                     JOIN policy_records AS policy ON policy.id = chunk.policy_id
-                    WHERE chunk.id IN ({placeholders})""",
-                tuple(chunk_id for chunk_id, _ in ranked),
+                    WHERE policy.is_public = TRUE AND policy.review_status = 'approved'
+                    ORDER BY chunk.embedding <=> %s::vector
+                    LIMIT %s""",
+                (vector_literal(embed_text(question)), vector_literal(embed_text(question)), max(top_k * 5, 20)),
             )
-            rows = {row["chunk_id"]: row for row in cursor.fetchall()}
+            ranked_rows = cursor.fetchall()
         finally:
             cursor.close()
             connection.close()
         generic_terms = {"목포", "청년", "정책", "지원", "사업", "알려줘", "가능한", "있는", "받을", "신청"}
         important_terms = {term for term in re.findall(r"[가-힣A-Za-z0-9]+", question.lower()) if len(term) >= 2 and term not in generic_terms}
         results = []
-        for chunk_id, score in ranked:
-            if chunk_id in rows:
-                searchable = f"{rows[chunk_id]['title']}\n{rows[chunk_id]['content']}".lower()
-                keyword_matches = sum(1 for term in important_terms if term in searchable)
-                combined_score = score + min(0.75, keyword_matches * 0.3)
-                results.append({**rows[chunk_id], "score": round(combined_score, 4)})
+        for row in ranked_rows:
+            searchable = f"{row['title']}\n{row['content']}".lower()
+            keyword_matches = sum(1 for term in important_terms if term in searchable)
+            combined_score = float(row["score"]) + min(0.75, keyword_matches * 0.3)
+            results.append({**row, "score": round(combined_score, 4)})
         results.sort(key=lambda item: item["score"], reverse=True)
         return [result for result in results if result["score"] >= min_score][:top_k]
 
@@ -251,9 +224,9 @@ class PolicyRAG:
 def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    parser = argparse.ArgumentParser(description="정책 원문 FAISS HNSW 검색 인덱스")
+    parser = argparse.ArgumentParser(description="정책 원문 pgvector HNSW 검색 인덱스")
     subcommands = parser.add_subparsers(dest="command", required=True)
-    subcommands.add_parser("rebuild", help="MySQL 정책 원문을 청크화하고 인덱스를 다시 생성")
+    subcommands.add_parser("rebuild", help="PostgreSQL 정책 원문을 청크화하고 벡터 인덱스를 다시 생성")
     search = subcommands.add_parser("search", help="정책 근거 검색")
     search.add_argument("question")
     args = parser.parse_args()

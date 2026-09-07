@@ -43,7 +43,7 @@ def collect_once(max_pages: int, delay: float, download_attachments: bool) -> No
         str(PROJECT_DIR / "youth_data_collector.py"),
         "--max-pages", str(max_pages),
         "--delay", str(delay),
-        "--mysql",
+        "--database",
     ]
     if download_attachments:
         command.append("--download-attachments")
@@ -98,22 +98,23 @@ def run_postprocessing() -> None:
 
 
 def start_run_record(run_type: str) -> int | None:
-    """Persist scheduler status when MySQL is reachable; never block collection on logging."""
+    """Persist scheduler status when PostgreSQL is reachable; never block collection on logging."""
     try:
         load_project_env()
-        from mysql_policy_repository import MySQLPolicyRepository
+        from postgres_policy_repository import PostgresPolicyRepository
 
-        repository = MySQLPolicyRepository()
+        repository = PostgresPolicyRepository()
         connection = repository.connect()
         try:
             repository.initialize(connection)
             cursor = connection.cursor()
             cursor.execute(
-                "INSERT INTO collection_runs (run_type, status, started_at) VALUES (%s, 'running', %s)",
+                "INSERT INTO collection_runs (run_type, status, started_at) VALUES (%s, 'running', %s) RETURNING id",
                 (run_type, datetime.now().replace(microsecond=0)),
             )
+            run_id = int(cursor.fetchone()["id"])
             connection.commit()
-            return int(cursor.lastrowid)
+            return run_id
         finally:
             connection.close()
     except Exception as error:
@@ -125,9 +126,9 @@ def finish_run_record(run_id: int | None, status: str, message: str | None = Non
     if run_id is None:
         return
     try:
-        from mysql_policy_repository import MySQLPolicyRepository
+        from postgres_policy_repository import PostgresPolicyRepository
 
-        connection = MySQLPolicyRepository().connect()
+        connection = PostgresPolicyRepository().connect()
         try:
             cursor = connection.cursor()
             cursor.execute(

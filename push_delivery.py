@@ -6,7 +6,7 @@ import json
 import os
 from datetime import datetime
 
-from mysql_policy_repository import MySQLPolicyRepository
+from postgres_policy_repository import PostgresPolicyRepository
 from youth_data_collector import load_local_env
 
 
@@ -40,12 +40,12 @@ def deliver_pending(*, dry_run: bool = False, limit: int = 100) -> dict[str, int
     if not dry_run:
         from pywebpush import WebPushException, webpush
 
-    repository = MySQLPolicyRepository()
+    repository = PostgresPolicyRepository()
     connection = repository.connect()
     repository.initialize(connection)
     counts: dict[str, int | str] = {"sent": 0, "failed": 0, "skipped": 0}
     try:
-        cursor = connection.cursor(dictionary=True)
+        cursor = connection.cursor()
         cursor.execute(
             """SELECT candidate.id, candidate.policy_id, candidate.match_reason, event.change_type,
                 policy.title, subscription.id AS subscription_id, subscription.endpoint,
@@ -82,8 +82,8 @@ def deliver_pending(*, dry_run: bool = False, limit: int = 100) -> dict[str, int
                     """INSERT INTO notification_deliveries
                         (candidate_id, channel, destination, status, sent_at, created_at)
                         VALUES (%s, 'web_push', %s, 'sent', %s, %s)
-                        ON DUPLICATE KEY UPDATE destination=VALUES(destination), status='sent',
-                          error_message=NULL, sent_at=VALUES(sent_at)""",
+                        ON CONFLICT (candidate_id, channel) DO UPDATE SET destination=EXCLUDED.destination,
+                          status='sent', error_message=NULL, sent_at=EXCLUDED.sent_at""",
                     (row["id"], row["endpoint"], now, now),
                 )
                 cursor.execute("UPDATE policy_match_candidates SET status='notified' WHERE id=%s", (row["id"],))
@@ -96,8 +96,8 @@ def deliver_pending(*, dry_run: bool = False, limit: int = 100) -> dict[str, int
                     """INSERT INTO notification_deliveries
                         (candidate_id, channel, destination, status, error_message, created_at)
                         VALUES (%s, 'web_push', %s, 'failed', %s, %s)
-                        ON DUPLICATE KEY UPDATE destination=VALUES(destination), status='failed',
-                          error_message=VALUES(error_message), sent_at=NULL""",
+                        ON CONFLICT (candidate_id, channel) DO UPDATE SET destination=EXCLUDED.destination,
+                          status='failed', error_message=EXCLUDED.error_message, sent_at=NULL""",
                     (row["id"], row["endpoint"], str(error)[:1000], now),
                 )
                 counts["failed"] = int(counts["failed"]) + 1
@@ -106,8 +106,8 @@ def deliver_pending(*, dry_run: bool = False, limit: int = 100) -> dict[str, int
                     """INSERT INTO notification_deliveries
                         (candidate_id, channel, destination, status, error_message, created_at)
                         VALUES (%s, 'web_push', %s, 'failed', %s, %s)
-                        ON DUPLICATE KEY UPDATE destination=VALUES(destination), status='failed',
-                          error_message=VALUES(error_message), sent_at=NULL""",
+                        ON CONFLICT (candidate_id, channel) DO UPDATE SET destination=EXCLUDED.destination,
+                          status='failed', error_message=EXCLUDED.error_message, sent_at=NULL""",
                     (row["id"], row["endpoint"], str(error)[:1000], now),
                 )
                 counts["failed"] = int(counts["failed"]) + 1

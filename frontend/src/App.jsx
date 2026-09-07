@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import './App.css'
+import './Home.css'
 import './Search.css'
 import './Chat.css'
 import './Preparation.css'
@@ -17,6 +18,20 @@ const profileOptions = {
   household_status: ['1인 가구', '부모 동거', '부부/자녀', '한부모', '기타'],
 }
 const eventLabel = type => type === 'new' ? '새 공고' : type === 'deadline' ? '마감 임박' : '변경 공고'
+const tagMeta = {
+  '전체': { icon: '✦', label: '전체 정책' },
+  '취업': { icon: '◎', label: '일자리' },
+  '창업': { icon: '◇', label: '창업' },
+  '주거': { icon: '⌂', label: '주거' },
+  '교육': { icon: '▤', label: '교육·직업' },
+  '복지': { icon: '＋', label: '금융·복지' },
+  '문화': { icon: '◌', label: '문화·생활' },
+}
+
+const compactText = (value, limit = 180) => {
+  const text = String(value || '').replace(/\s+/g, ' ').trim()
+  return text.length > limit ? `${text.slice(0, limit).trim()}…` : text
+}
 
 async function api(path, options = {}) {
   const response = await fetch(`${API}${path}`, { credentials: 'include', headers: { 'Content-Type': 'application/json', ...options.headers }, ...options })
@@ -25,8 +40,32 @@ async function api(path, options = {}) {
   return response.json()
 }
 
-function Landing({ onExplore }) {
-  return <><section className="hero"><div><span className="eyebrow">MOKPO YOUTH POLICY</span><h1>목포 청년의 오늘에<br /><em>딱 맞는 정책</em>을.</h1><p>흩어진 청년 지원 정보를 모으고, 나의 조건에 맞는 공고만 골라 알려드립니다.</p><div className="hero-actions"><button className="button kakao" onClick={() => { window.location.href = `${API}/auth/kakao` }}>● 카카오로 3초 만에 시작하기</button><button className="button outline" onClick={onExplore}>로그인 없이 정책 찾기</button></div><small>로그인 후 관심 분야와 생년월일을 설정하면 맞춤 추천이 시작됩니다.</small></div><aside><span>오늘의 서비스</span><strong>정책 탐색부터<br />새 공고 알림까지</strong><div>{tags.slice(0, 4).map(tag => <b key={tag}>{tag}</b>)}</div></aside></section><section className="features">{[['01', '맞춤 추천', '연령, 목포 거주, 관심 분야를 바탕으로 정책을 추립니다.'], ['02', '변경 감지', '매일 수집해 새 공고와 수정된 내용을 찾아냅니다.'], ['03', '한눈에 확인', '지원 조건과 마감일, 원문 링크까지 한 화면에서 봅니다.']].map(([n, title, copy]) => <article key={n}><span>{n}</span><h2>{title}</h2><p>{copy}</p></article>)}</section></>
+function MainPolicyCard({ item, index, onSelect }) {
+  const age = item.min_age || item.max_age ? `만 ${item.min_age ?? 0}~${item.max_age ?? '제한 없음'}세` : '연령은 공고 확인'
+  const period = item.period || [item.application_start_date, item.application_end_date].filter(Boolean).join(' ~ ') || '상시 또는 별도 공고'
+  const audience = compactText(item.qualification_text || item.target_condition || item.residency_condition || `${item.target_region} 거주 청년`, 110)
+  const summary = compactText(item.summary || item.content || '구체적인 지원 내용은 공식 공고에서 확인할 수 있습니다.')
+  return <article className={`home-policy-card tone-${index % 4}`}>
+    <div className="card-poster"><div><span>{item.category}</span><b>{item.target_region}</b></div><i aria-hidden="true">{tagMeta[item.category]?.icon || '✦'}</i><h3>{item.title}</h3></div>
+    <div className="home-card-content"><p>{summary}</p><dl><div><dt>지원 대상</dt><dd>{age} · {audience}</dd></div><div><dt>신청 기간</dt><dd>{compactText(period, 90)}</dd></div></dl><footer><span>{item.organization || item.source_site || '담당기관 확인'}</span><button onClick={() => onSelect(item.id)}>자세히 보기 <b>→</b></button></footer></div>
+  </article>
+}
+
+function Home({ user, setView, onSelect, onSearch }) {
+  const [selectedTag, setSelectedTag] = useState('전체')
+  const [keyword, setKeyword] = useState('')
+  const params = new URLSearchParams({ recruitment: 'open', limit: '12' })
+  if (selectedTag !== '전체') params.set('category', selectedTag)
+  const { data = { items: [], total: 0 }, isLoading, error } = useQuery({ queryKey: ['home-policies', selectedTag], queryFn: () => api(`/api/policies?${params}`) })
+  const visibleTags = ['전체', ...tags]
+  return <div className="home-page">
+    <section className="home-hero"><div className="home-hero-copy"><span className="eyebrow">MOKPO YOUTH POLICY</span><h1><em>{user ? `${user.display_name}님,` : '목포 청년의'}</em><br />오늘 필요한 정책을 찾아보세요.</h1><p>목포시부터 전남·전국 정책까지, 목포에 사는 청년이 신청할 수 있는 지원 정보를 한곳에 모았습니다.</p><form className="home-search" onSubmit={event => { event.preventDefault(); onSearch(keyword) }}><input value={keyword} onChange={event => setKeyword(event.target.value)} placeholder="정책명, 지원금, 취업·주거 조건을 검색해 보세요" aria-label="정책 검색어" /><button type="submit">검색</button></form><div className="home-hero-actions">{!user ? <button className="button kakao" onClick={() => { window.location.href = `${API}/auth/kakao` }}>● 카카오로 맞춤 정책 시작하기</button> : <button className="button dark" onClick={() => setView('policy')}>나에게 맞는 정책 보기</button>}<button className="button outline" onClick={() => onSearch('')}>전체 조건 검색</button></div></div>
+      <aside className="home-service-card"><small>매일 업데이트되는 정책 정보</small><strong>찾고, 비교하고,<br />신청 준비까지 한 번에</strong><ul><li><b>01</b><span>목포 거주자 대상 정책 선별</span></li><li><b>02</b><span>신규·변경·마감 공고 알림</span></li><li><b>03</b><span>근거 기반 AI 정책상담</span></li></ul></aside>
+    </section>
+    <section className="home-filter-section"><div className="home-section-heading"><div><span className="eyebrow">POLICY BY INTEREST</span><h2>관심 분야별 정책</h2><p>분야를 선택하면 해당 정책만 바로 모아볼 수 있어요.</p></div><button className="link-button" onClick={() => onSearch('')}>전체 정책 검색 →</button></div><div className="home-tags" role="tablist" aria-label="정책 분야">{visibleTags.map(tag => <button role="tab" aria-selected={selectedTag === tag} className={selectedTag === tag ? 'active' : ''} key={tag} onClick={() => setSelectedTag(tag)}><span>{tagMeta[tag].icon}</span>{tagMeta[tag].label}</button>)}</div></section>
+    <section className="home-alert"><div><small>놓치기 쉬운 맞춤 알림</small><strong>관심 정책을 저장하면 새 공고와 마감 소식을 알려드려요.</strong></div><button onClick={() => user ? setView('notification') : window.location.href = `${API}/auth/kakao`}>{user ? '내 알림 확인하기' : '로그인하고 알림 받기'} →</button></section>
+    <section className="home-policy-section"><div className="home-section-heading"><div><span className="eyebrow">OPEN NOW</span><h2>{tagMeta[selectedTag].label} · 지금 확인할 정책</h2><p>카드에서 지원 내용과 대상, 신청 기간을 먼저 확인하세요.</p></div><span className="policy-total">총 <strong>{data.total}</strong>건</span></div>{error && <p className="error-box">{error.message}</p>}{isLoading ? <p className="loading">정책을 불러오고 있어요…</p> : data.items.length ? <div className="home-policy-grid">{data.items.map((item, index) => <MainPolicyCard key={item.id} item={item} index={index} onSelect={onSelect} />)}</div> : <div className="home-empty"><strong>현재 확인할 수 있는 {tagMeta[selectedTag].label} 정책이 없습니다.</strong><p>다른 분야를 선택하거나 전체 정책 검색에서 모집 상태를 조정해 보세요.</p></div>}</section>
+  </div>
 }
 
 function Profile({ user, onDone }) {
@@ -188,8 +227,8 @@ function PreparationDetail({ preparationId, onBack }) {
   return <section className="preparation-detail"><button className="back-button" onClick={onBack}>← 신청 준비함</button><header><div><span className="eyebrow">APPLICATION CHECKLIST</span><h1>{data.current_policy_title}</h1><p>{data.organization || '담당 기관 확인 필요'} · 최종 확인 {data.policy_verified_at ? new Date(data.policy_verified_at).toLocaleDateString('ko-KR') : '확인 필요'}</p></div><div className="progress-circle"><strong>{percent}%</strong><span>준비 완료</span></div></header><section className="source-confirm"><div><h2>공식 원문을 먼저 확인해 주세요</h2><p>공고문과 첨부파일에서 서류 후보와 신청 문항을 찾아볼 수 있습니다. 자동 결과는 제출 전 반드시 원문과 대조해야 합니다.</p><div><a href={data.original_link_snapshot} target="_blank" rel="noreferrer">공식 공고 열기 ↗</a><button className="button outline small" onClick={() => extract.mutate()} disabled={extract.isPending}>{extract.isPending ? '공고 내용 찾는 중…' : '공고에서 서류·문항 찾기'}</button></div></div><label><input type="checkbox" checked={data.source_confirmed} onChange={event => confirmSource.mutate(event.target.checked)} /> 공식 원문을 확인했습니다</label></section><PreparationQualityPanel preparationId={preparationId} /><div className="requirement-list">{data.requirements.map(item => <RequirementItem key={item.id} preparationId={preparationId} item={item} />)}</div><section className="form-editor"><h2>신청서 문항 작성</h2><p>공식 양식에서 확인한 문항을 추가하세요. 프로필 값은 문항별 동의 시에만 복사됩니다.</p>{data.form_fields.map(item => <FormFieldItem key={item.id} preparationId={preparationId} item={item} />)}<form className="add-requirement" onSubmit={event => { event.preventDefault(); if (fieldLabel.trim()) addField.mutate() }}><input value={fieldLabel} onChange={event => setFieldLabel(event.target.value)} placeholder="예: 성명 또는 지원동기" /><select value={autofillKey} onChange={event => setAutofillKey(event.target.value)}>{autofillOptions.map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select>{autofillKey && <label><input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)} /> 이 값 사용에 동의</label>}<button className="button dark" disabled={!fieldLabel.trim() || (autofillKey && !consent)}>문항 추가</button></form></section><form className="add-requirement" onSubmit={event => { event.preventDefault(); if (title.trim()) add.mutate() }}><div><strong>공고에서 확인한 서류 추가</strong><span>자동 추출되지 않은 증빙서류를 직접 추가하세요.</span></div><input value={title} onChange={event => setTitle(event.target.value)} placeholder="예: 주민등록초본" /><button className="button dark" disabled={!title.trim()}>항목 추가</button></form><div className="preparation-footer"><p>공식 제출은 완료되지 않습니다.</p><a className="button dark" href={`${API}/api/preparations/${preparationId}/export/hwpx`}>HWPX로 내보내기</a><button className="remove-button" onClick={() => { if (window.confirm('이 신청 준비 건과 체크리스트를 삭제할까요?')) remove.mutate() }}>신청 준비 건 삭제</button></div></section>
 }
 
-function Search({ onSelect }) {
-  const emptyFilters = { q: '', category: '', region: '', recruitment: 'open', age: '', employment_status: '', income_band: '', education_level: '' }
+function Search({ onSelect, initialQuery = '' }) {
+  const emptyFilters = { q: initialQuery, category: '', region: '', recruitment: 'open', age: '', employment_status: '', income_band: '', education_level: '' }
   const [draft, setDraft] = useState(emptyFilters)
   const [filters, setFilters] = useState(emptyFilters)
   const params = new URLSearchParams(Object.entries(filters).filter(([, value]) => value !== '').map(([key, value]) => [key, String(value)]))
@@ -240,29 +279,24 @@ function List({ kind, onBack, onSelect }) {
   return <section><div className="list-heading"><span className="eyebrow">{kind === 'policy' ? 'PERSONAL MATCH' : 'POLICY UPDATES'}</span><h1>{title}</h1><p>{description}</p></div>{items.length ? <div className="policy-list">{items.map((item, index) => <PolicyCard item={item} notification={kind !== 'policy'} onSelect={kind === 'policy' ? onSelect : undefined} key={`${item.id || item.title}-${index}`} />)}</div> : <div className="empty"><span className="eyebrow">ALL CAUGHT UP</span><h1>{kind === 'policy' ? '지금은 새 공고를 기다리고 있어요.' : '확인할 새 알림이 없어요.'}</h1><p>매일 자동 수집을 통해 새 정책을 발견하는 즉시 이곳에 보여드릴게요.</p><button className="link-button" onClick={onBack}>대시보드로 돌아가기 →</button></div>}</section>
 }
 
-function Dashboard({ user, setView }) {
-  const { data: policies = [] } = useQuery({ queryKey: ['policy'], queryFn: () => api('/api/policies/recommended') }); const { data: notices = [] } = useQuery({ queryKey: ['notification'], queryFn: () => api('/api/notifications') }); const { data: wishlist = [] } = useQuery({ queryKey: ['wishlist'], queryFn: () => api('/api/wishlist') }); const { data: preparations = [] } = useQuery({ queryKey: ['preparations'], queryFn: () => api('/api/preparations') })
-  return <><section className="dashboard-head"><div><span className="eyebrow">MY POLICY DESK</span><h1>반가워요, <em>{user.display_name}</em>님</h1><p>관심 분야 <strong>{user.interests?.join(', ') || '설정 필요'}</strong>을 기준으로 정책을 살피고 있어요.</p></div><button className="link-button" onClick={() => setView('profile')}>프로필 수정 →</button></section><section className="stats four"><button onClick={() => setView('policy')}><span>나에게 맞는 정책</span><strong>{policies.length}<small>건</small></strong><p>신청 가능한 공고 보기 →</p></button><button onClick={() => setView('wishlist')}><span>관심 정책</span><strong>{wishlist.length}<small>건</small></strong><p>저장한 정책 관리 →</p></button><button onClick={() => setView('preparations')}><span>신청 준비</span><strong>{preparations.length}<small>건</small></strong><p>체크리스트 이어서 보기 →</p></button><button className="accent" onClick={() => setView('notification')}><span>새 알림</span><strong>{notices.length}<small>건</small></strong><p>신규·변경 공고 확인 →</p></button></section><section className="guide"><div><span className="eyebrow">POLICY SEARCH</span><h2>원하는 정책을 직접 찾아보세요.</h2><p>키워드, 분야, 지역, 나이와 모집 상태를 조합해 목포 청년 대상 정책을 검색할 수 있어요.</p></div><button className="button dark" onClick={() => setView('search')}>전체 정책 검색</button></section></>
-}
-
 export default function App() {
-  const [view, setView] = useState('home'); const [policyId, setPolicyId] = useState(null); const [preparationId, setPreparationId] = useState(null); const queryClient = useQueryClient(); const { data: user, isLoading } = useQuery({ queryKey: ['me'], queryFn: () => api('/api/me') })
+  const [view, setView] = useState('home'); const [policyId, setPolicyId] = useState(null); const [preparationId, setPreparationId] = useState(null); const [searchQuery, setSearchQuery] = useState(''); const queryClient = useQueryClient(); const { data: user, isLoading } = useQuery({ queryKey: ['me'], queryFn: () => api('/api/me') })
   const logout = async () => { await api('/api/auth/logout', { method: 'POST' }); queryClient.setQueryData(['me'], null); setView('home') }
   const openDetail = id => { setPolicyId(id); setView('detail'); window.scrollTo({ top: 0, behavior: 'smooth' }) }
   const openPreparation = id => { setPreparationId(id); setView('preparation-detail'); window.scrollTo({ top: 0, behavior: 'smooth' }) }
+  const openSearch = query => { setSearchQuery(query); setView('search'); window.scrollTo({ top: 0, behavior: 'smooth' }) }
   if (isLoading) return <main className="shell"><p className="loading">서비스를 준비하고 있어요…</p></main>
   let content
-  if (view === 'search') content = <Search onSelect={openDetail} />
+  if (view === 'search') content = <Search onSelect={openDetail} initialQuery={searchQuery} />
   else if (view === 'chat') content = <Chat onSelect={openDetail} user={user} />
   else if (view === 'detail') content = <Detail policyId={policyId} user={user} onBack={() => setView('search')} onProfile={() => setView('profile')} onPreparation={openPreparation} />
-  else if (!user) content = <Landing onExplore={() => setView('search')} />
-  else if (view === 'profile') content = <Profile user={user} onDone={() => setView('home')} />
+  else if (view === 'profile' && user) content = <Profile user={user} onDone={() => setView('home')} />
   else if (view === 'policy') content = <List kind="policy" onBack={() => setView('home')} onSelect={openDetail} />
   else if (view === 'wishlist') content = <Wishlist onSelect={openDetail} />
   else if (view === 'preparations') content = <Preparations onOpen={openPreparation} onSelect={openDetail} />
   else if (view === 'preparation-detail') content = <PreparationDetail preparationId={preparationId} onBack={() => setView('preparations')} />
   else if (view === 'notification') content = <Notifications onSelect={openDetail} />
   else if (view === 'admin' && user.is_admin) content = <Admin />
-  else content = <Dashboard user={user} setView={setView} />
-  return <div className="shell"><header><button className="brand" onClick={() => setView('home')}><span>M</span>목포 청년 정책</button><nav><button onClick={() => setView('search')}>정책 검색</button><button onClick={() => setView('chat')}>AI 상담</button>{user && <><button onClick={() => setView('policy')}>맞춤 정책</button><button onClick={() => setView('wishlist')}>관심 정책</button><button onClick={() => setView('preparations')}>신청 준비함</button><button onClick={() => setView('notification')}>새 알림</button>{user.is_admin && <button onClick={() => setView('admin')}>관리자</button>}<button onClick={logout}>로그아웃</button></>}</nav></header><main>{content}</main><footer>목포 거주 청년을 위한 맞춤 정책 알림 서비스</footer></div>
+  else content = <Home user={user} setView={setView} onSelect={openDetail} onSearch={openSearch} />
+  return <div className="shell"><header><button className="brand" onClick={() => setView('home')}><span>M</span>목포 청년 정책</button><nav><button onClick={() => openSearch('')}>정책 검색</button><button onClick={() => setView('chat')}>AI 상담</button>{user && <><button onClick={() => setView('policy')}>맞춤 정책</button><button onClick={() => setView('wishlist')}>관심 정책</button><button onClick={() => setView('preparations')}>신청 준비함</button><button onClick={() => setView('notification')}>새 알림</button>{user.is_admin && <button onClick={() => setView('admin')}>관리자</button>}<button onClick={logout}>로그아웃</button></>}</nav></header><main>{content}</main><footer><strong>목포 청년 정책</strong><span>목포 거주 청년을 위한 맞춤 정책 탐색·알림 서비스</span><small>최종 신청 조건과 일정은 반드시 공식 공고를 확인해 주세요.</small></footer></div>
 }

@@ -13,7 +13,7 @@ import requests
 from flask import Flask, redirect, render_template_string, request, session, url_for
 from markupsafe import escape
 
-from mysql_policy_repository import MySQLPolicyRepository
+from postgres_policy_repository import PostgresPolicyRepository
 from policy_matcher import TAG_KEYWORDS, eligible_for_policy
 from youth_data_collector import load_local_env
 
@@ -36,7 +36,7 @@ def page(body: str, title: str = "목포 청년 정책"):
 
 class KakaoUserRepository:
     def __init__(self) -> None:
-        self.repository = MySQLPolicyRepository()
+        self.repository = PostgresPolicyRepository()
 
     def _connection(self):
         connection = self.repository.connect()
@@ -46,7 +46,7 @@ class KakaoUserRepository:
     def upsert_kakao_user(self, kakao_user_id: int, nickname: str, email: str | None) -> int:
         connection = self._connection()
         try:
-            cursor = connection.cursor(dictionary=True)
+            cursor = connection.cursor()
             cursor.execute("SELECT id FROM user_profiles WHERE kakao_user_id = %s", (kakao_user_id,))
             existing = cursor.fetchone()
             now = datetime.now().replace(microsecond=0)
@@ -60,10 +60,10 @@ class KakaoUserRepository:
                 cursor.execute(
                     """INSERT INTO user_profiles
                     (kakao_user_id, display_name, email, residency_city, created_at, updated_at)
-                    VALUES (%s, %s, %s, '목포', %s, %s)""",
+                    VALUES (%s, %s, %s, '목포', %s, %s) RETURNING id""",
                     (kakao_user_id, nickname, email, now, now),
                 )
-                user_id = cursor.lastrowid
+                user_id = cursor.fetchone()["id"]
             connection.commit()
             return user_id
         finally:
@@ -83,7 +83,7 @@ class KakaoUserRepository:
     def user(self, user_id: int):
         connection = self._connection()
         try:
-            cursor = connection.cursor(dictionary=True)
+            cursor = connection.cursor()
             cursor.execute("SELECT id, display_name, birth_date FROM user_profiles WHERE id = %s", (user_id,))
             user = cursor.fetchone()
             if user:
@@ -98,11 +98,11 @@ class KakaoUserRepository:
             return []
         connection = self._connection()
         try:
-            cursor = connection.cursor(dictionary=True)
+            cursor = connection.cursor()
             cursor.execute(
                 """SELECT * FROM policy_records
                 WHERE target_region IN ('목포', '전남(목포 포함)', '전국(목포 포함)')
-                  AND (application_end_date IS NULL OR application_end_date >= CURDATE())
+                  AND (application_end_date IS NULL OR application_end_date >= CURRENT_DATE)
                 ORDER BY application_end_date IS NULL DESC, application_end_date ASC, updated_at DESC"""
             )
             interests = set(user["interests"])
@@ -113,7 +113,7 @@ class KakaoUserRepository:
     def pending_notifications_for(self, user_id: int) -> list[dict]:
         connection = self._connection()
         try:
-            cursor = connection.cursor(dictionary=True)
+            cursor = connection.cursor()
             cursor.execute(
                 """SELECT event.change_type, policy.title, policy.original_link, policy.application_end_date,
                           candidate.match_reason, candidate.created_at
@@ -196,9 +196,9 @@ def create_app() -> Flask:
             profile = account.get("profile") or {}
             user_id = users.upsert_kakao_user(int(kakao_user["id"]), profile.get("nickname") or "카카오 사용자", account.get("email"))
         except (requests.RequestException, KeyError, ValueError):
-            return page("<p>카카오 사용자 정보를 처리하지 못했습니다. 카카오 로그인 동의항목과 MySQL 연결 상태를 확인하세요.</p><p><a href='/auth/kakao'>카카오 로그인 다시 시작</a></p>"), 502
+            return page("<p>카카오 사용자 정보를 처리하지 못했습니다. 카카오 로그인 동의항목과 PostgreSQL 연결 상태를 확인하세요.</p><p><a href='/auth/kakao'>카카오 로그인 다시 시작</a></p>"), 502
         except Exception:
-            return page("<p>카카오 계정을 MySQL 프로필로 저장하지 못했습니다. MySQL 서비스와 계정 설정을 확인하세요.</p><p><a href='/auth/kakao'>카카오 로그인 다시 시작</a></p>"), 502
+            return page("<p>카카오 계정을 PostgreSQL 프로필로 저장하지 못했습니다. PostgreSQL 서비스와 계정 설정을 확인하세요.</p><p><a href='/auth/kakao'>카카오 로그인 다시 시작</a></p>"), 502
         session["user_id"] = user_id
         return redirect(url_for("profile"))
 

@@ -72,8 +72,11 @@ def ensure_env() -> tuple[bool, str]:
     values = parse_env(ENV_PATH)
     updates: dict[str, str] = {}
     placeholders = {"", "change_this_database_password", "change_this_root_password", "change_this_to_a_long_random_secret"}
-    for key in ("MYSQL_PASSWORD", "MYSQL_ROOT_PASSWORD", "FLASK_SECRET_KEY"):
-        if values.get(key, "") in placeholders:
+    if values.get("POSTGRES_PASSWORD", "") in placeholders and values.get("MYSQL_PASSWORD", "") not in placeholders:
+        # 기존 MySQL 설치에서 업그레이드한 사용자는 이전 시 사용한 동일 비밀번호를 이어 쓴다.
+        updates["POSTGRES_PASSWORD"] = values["MYSQL_PASSWORD"]
+    for key in ("POSTGRES_PASSWORD", "FLASK_SECRET_KEY"):
+        if values.get(key, "") in placeholders and key not in updates:
             updates[key] = secrets.token_urlsafe(32)
     if not values.get("VAPID_PUBLIC_KEY") or not values.get("VAPID_PRIVATE_KEY"):
         updates["VAPID_PUBLIC_KEY"], updates["VAPID_PRIVATE_KEY"] = generate_vapid_keys()

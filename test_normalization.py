@@ -7,7 +7,7 @@ from youth_data_collector import (
     extract_application_dates,
     normalize,
 )
-from mysql_policy_repository import MySQLPolicyRepository
+from postgres_policy_repository import PostgresPolicyRepository
 from policy_matcher import diagnose_eligibility, eligible_for_policy, policy_tags
 
 
@@ -39,9 +39,9 @@ class NormalizationTests(unittest.TestCase):
         self.assertEqual(record["application_end_date"], "2026-07-31")
         self.assertTrue(record["content_hash"])
 
-    def test_mysql_record_key_is_stable_for_same_policy(self):
+    def test_postgres_record_key_is_stable_for_same_policy(self):
         record = {"source_site": "목포시청", "category": "청년 지원사업", "original_link": "https://example.test/policy/1"}
-        self.assertEqual(MySQLPolicyRepository.record_key(record), MySQLPolicyRepository.record_key(record))
+        self.assertEqual(PostgresPolicyRepository.record_key(record), PostgresPolicyRepository.record_key(record))
 
     def test_policy_interest_and_age_matching(self):
         policy = {"category": "청년 지원사업", "title": "청년 주거비 지원", "content": "월세 지원", "qualification_text": "", "min_age": 19, "max_age": 34}

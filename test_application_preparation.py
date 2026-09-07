@@ -11,7 +11,7 @@ from application_extractor import extract_requirement_candidates
 from application_form_extractor import extract_form_field_candidates
 from backend.main import app, default_requirements
 from hwpx_exporter import build_hwpx
-from mysql_policy_repository import MySQLPolicyRepository
+from postgres_policy_repository import PostgresPolicyRepository
 from youth_data_collector import load_local_env
 
 
@@ -60,7 +60,7 @@ class PreparationApiIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         load_local_env()
-        cls.repository = MySQLPolicyRepository()
+        cls.repository = PostgresPolicyRepository()
         cls.connection = cls.repository.connect()
         cls.repository.initialize(cls.connection)
         cursor = cls.connection.cursor()
@@ -68,13 +68,13 @@ class PreparationApiIntegrationTests(unittest.TestCase):
         policy = cursor.fetchone()
         if policy is None:
             raise unittest.SkipTest("테스트할 정책 데이터가 없습니다.")
-        cls.policy_id = policy[0]
+        cls.policy_id = policy["id"]
         now = datetime.now().replace(microsecond=0)
         cursor.execute(
-            "INSERT INTO user_profiles (display_name, legal_name, residency_city, created_at, updated_at) VALUES (%s, %s, '목포', %s, %s)",
+            "INSERT INTO user_profiles (display_name, legal_name, residency_city, created_at, updated_at) VALUES (%s, %s, '목포', %s, %s) RETURNING id",
             ("신청준비 통합테스트", "테스트 사용자", now, now),
         )
-        cls.user_id = cursor.lastrowid
+        cls.user_id = cursor.fetchone()["id"]
         cls.connection.commit()
         secret = os.getenv("FLASK_SECRET_KEY", "change-me")
         session_data = b64encode(json.dumps({"user_id": cls.user_id}).encode("utf-8"))

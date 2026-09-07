@@ -1,4 +1,4 @@
-"""Create personalized policy-alert candidates from MySQL change events."""
+"""Create personalized policy-alert candidates from PostgreSQL change events."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import re
 from datetime import date, datetime
 from typing import Any
 
-from mysql_policy_repository import MySQLPolicyRepository
+from postgres_policy_repository import PostgresPolicyRepository
 from youth_data_collector import load_local_env
 
 
@@ -139,7 +139,7 @@ def diagnose_eligibility(user: dict[str, Any], policy: dict[str, Any]) -> dict[s
 
 class PolicyMatcher:
     def __init__(self) -> None:
-        self.repository = MySQLPolicyRepository()
+        self.repository = PostgresPolicyRepository()
 
     def _connection(self):
         connection = self.repository.connect()
@@ -152,10 +152,10 @@ class PolicyMatcher:
             cursor = connection.cursor()
             now = datetime.now().replace(microsecond=0)
             cursor.execute(
-                "INSERT INTO user_profiles (display_name, birth_date, residency_city, created_at, updated_at) VALUES (%s, %s, '목포', %s, %s)",
+                "INSERT INTO user_profiles (display_name, birth_date, residency_city, created_at, updated_at) VALUES (%s, %s, '목포', %s, %s) RETURNING id",
                 (display_name, birth_date, now, now),
             )
-            user_id = cursor.lastrowid
+            user_id = cursor.fetchone()["id"]
             cursor.executemany(
                 "INSERT INTO user_interests (user_id, interest_tag) VALUES (%s, %s)",
                 [(user_id, tag) for tag in sorted(set(interests))],
@@ -168,12 +168,12 @@ class PolicyMatcher:
     def create_candidates(self) -> int:
         connection = self._connection()
         try:
-            cursor = connection.cursor(dictionary=True)
+            cursor = connection.cursor()
             cursor.execute(
                 """SELECT event.id AS event_id, event.change_type, policy.*
                 FROM policy_change_events AS event
                 JOIN policy_records AS policy ON policy.id = event.policy_id
-                WHERE policy.application_end_date IS NULL OR policy.application_end_date >= CURDATE()"""
+                WHERE policy.application_end_date IS NULL OR policy.application_end_date >= CURRENT_DATE"""
             )
             events = cursor.fetchall()
             cursor.execute("SELECT * FROM user_profiles WHERE is_active = TRUE AND residency_city = '목포' AND birth_date IS NOT NULL")
@@ -191,9 +191,10 @@ class PolicyMatcher:
                         days_left = max(0, (policy["application_end_date"] - date.today()).days)
                         reason = f"신청 마감 {days_left}일 전 / {reason}"
                     cursor.execute(
-                        """INSERT IGNORE INTO policy_match_candidates
+                        """INSERT INTO policy_match_candidates
                         (event_id, policy_id, user_id, match_reason, created_at)
-                        VALUES (%s, %s, %s, %s, %s)""",
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (event_id, user_id) DO NOTHING""",
                         (policy["event_id"], policy["id"], user["id"], reason, now),
                     )
                     created += cursor.rowcount
@@ -209,10 +210,10 @@ class PolicyMatcher:
             return {"events": 0, "candidates": 0}
         connection = self._connection()
         try:
-            cursor = connection.cursor(dictionary=True)
+            cursor = connection.cursor()
             cursor.execute(
                 """SELECT * FROM policy_records
-                WHERE application_end_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL %s DAY)
+                WHERE application_end_date BETWEEN CURRENT_DATE AND CURRENT_DATE + %s
                   AND target_region IN ('목포', '전남(목포 포함)', '전국(목포 포함)')""",
                 (max(valid_thresholds),),
             )
@@ -226,9 +227,10 @@ class PolicyMatcher:
                     continue
                 event_key = f"deadline:{policy['id']}:{policy['application_end_date'].isoformat()}:D{threshold}"
                 cursor.execute(
-                    """INSERT IGNORE INTO policy_change_events
+                    """INSERT INTO policy_change_events
                     (policy_id, change_type, event_key, previous_content_hash, current_content_hash, detected_at)
-                    VALUES (%s, 'deadline', %s, NULL, %s, %s)""",
+                    VALUES (%s, 'deadline', %s, NULL, %s, %s)
+                    ON CONFLICT (event_key) DO NOTHING""",
                     (policy["id"], event_key, policy["content_hash"], now),
                 )
                 events += cursor.rowcount
@@ -241,7 +243,7 @@ class PolicyMatcher:
     def pending_candidates(self) -> list[dict[str, Any]]:
         connection = self._connection()
         try:
-            cursor = connection.cursor(dictionary=True)
+            cursor = connection.cursor()
             cursor.execute(
                 """SELECT candidate.id, user.display_name, policy.title, policy.original_link,
                           candidate.match_reason, event.change_type, candidate.created_at

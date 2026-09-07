@@ -24,7 +24,7 @@ Docker 백엔드 이미지에는 Playwright Chromium이 함께 설치됩니다. 
 
 ## 첨부파일 수집
 
-기본 수집은 첨부파일 **링크만** 기록합니다. 실제 파일까지 수집하려면 `--download-attachments`를 지정합니다. PDF는 텍스트를 추출하고, 공개 표준 형식인 HWPX는 내부 XML에서 본문을 추출합니다. 구형 HWP는 파일을 보관하며 `attachment_status`에 미지원 상태를 남깁니다. 이미지형 PDF의 OCR은 다음 단계에서 추가할 수 있습니다.
+기본 수집은 첨부파일 **링크만** 기록합니다. 실제 파일까지 수집하려면 `--download-attachments`를 지정합니다. PDF는 페이지별 읽기 순서를 비교하고 반복 머리말·꼬리말을 제거해 텍스트를 추출합니다. 공개 표준 형식인 HWPX는 내부 XML의 섹션·문단·표 셀 순서를 보존해 추출합니다. URL에 확장자가 없는 다운로드 링크도 응답 MIME 형식과 파일 시그니처로 PDF/HWPX를 판별합니다. 구형 HWP는 파일을 보관하며 `attachment_status`에 미지원 상태를 남깁니다. 텍스트 계층이 없는 이미지형 PDF는 상태에 수동 확인 필요를 기록합니다.
 
 아래 명령은 목포시청 게시판 첫 페이지에서 정책 1건만 시험 수집하며, 요청 간격을 5초로 유지합니다.
 
@@ -34,24 +34,38 @@ Docker 백엔드 이미지에는 Playwright Chromium이 함께 설치됩니다. 
 
 첨부 원본은 `data/attachments/`에, 추출된 내용과 처리 결과는 수집 JSON·CSV의 `attachment_files`, `attachment_text`, `attachment_status` 컬럼에 저장됩니다. 정책별 처리 파일 수는 기본 3건이며, `--max-attachments-per-policy`로 조정할 수 있습니다.
 
+## 사이트 구조 변화 감지와 수집 품질
+
+각 사이트는 제목·본문·목록·첨부 영역에 여러 CSS 선택자를 순서대로 적용합니다. 페이지는 열렸지만 알려진 구조를 모두 찾지 못하면 빈 수집으로 조용히 끝내지 않고 `data/diagnostics/`에 당시 공개 HTML과 URL·해시 메타데이터를 저장합니다. 기본 실행은 종료 코드 2로 실패하여 Windows 작업 스케줄러와 Docker 로그에서 이상을 확인할 수 있습니다. 일부 사이트가 실패해도 나머지 사이트의 결과 파일과 PostgreSQL 동기화는 먼저 마칩니다.
+
+매 실행마다 `data/collected/collection_quality_날짜_시간.json`이 생성됩니다. 대상 사이트별 원본 수, 저장 수, 지역 필터 수, 품질 미달 제외 수와 오류를 확인할 수 있습니다. 임시 점검 중 구조 오류를 허용해야 할 때만 `--allow-structure-errors`를 사용합니다.
+
 ## 정제·구조화
 
 수집기에서 페이지 본문과 첨부파일 텍스트를 함께 분석해 `qualification_text`(지원 자격 요약), `min_age`, `max_age`, `residency_condition`, `application_start_date`, `application_end_date`를 생성합니다. 날짜는 `YYYY-MM-DD` 형식으로 저장하며, `content_hash`는 다음 단계의 변경 공고 감지에 사용합니다.
 
-## MySQL 저장·변경 감지
+## PostgreSQL + pgvector 저장·변경 감지
 
-실제 저장을 하려면 **MySQL Server 8.0 이상**을 먼저 설치하고 실행해야 합니다. 설치 뒤 `.env`에 `MYSQL_PASSWORD`를 설정한 다음 아래처럼 실행합니다. 처음 실행하면 `youth_policy` 데이터베이스와 테이블을 자동으로 만듭니다.
+로컬 실행은 PostgreSQL 16과 pgvector 확장이 필요합니다. Docker Compose를 사용하면 둘 다 자동으로 준비됩니다. `.env`에 `POSTGRES_PASSWORD`를 설정한 다음 아래처럼 실행하면 테이블을 자동으로 초기화합니다.
+
+기존 MySQL 데이터를 처음 한 번 옮길 때는 기존 `MYSQL_*` 설정과 새 `POSTGRES_*` 설정을 `.env`에 함께 둔 뒤 실행합니다. 원본 MySQL은 읽기만 하며 삭제하지 않습니다.
+
+```powershell
+.\.venv\Scripts\python.exe migrate_mysql_to_postgres.py
+```
+
+대상 PostgreSQL에 이미 데이터가 있어 이를 교체하려는 경우에만 `--replace-target`을 추가합니다. Docker의 PostgreSQL은 호스트 충돌을 피하기 위해 기본적으로 `localhost:55432`에 공개됩니다.
 
 ```powershell
 .\.venv\Scripts\python -m pip install -r requirements.txt
-.\.venv\Scripts\python youth_data_collector.py --targets mokpo_city_youth_support --max-pages 1 --delay 5 --mysql
+.\.venv\Scripts\python youth_data_collector.py --targets mokpo_city_youth_support --max-pages 1 --delay 5 --database
 ```
 
-`policy_records`는 원문 URL 등을 바탕으로 정책을 식별하고, `content_hash`가 바뀐 경우에만 갱신합니다. `policy_change_events`에는 `new` 또는 `updated` 이벤트만 기록되므로 이후 관심 정책 알림에 바로 사용할 수 있습니다. 상세 테이블 설계는 `schema_mysql.sql`에 있습니다.
+`policy_records`는 원문 URL 등을 바탕으로 정책을 식별하고, `content_hash`가 바뀐 경우에만 갱신합니다. `policy_change_events`에는 `new` 또는 `updated` 이벤트만 기록되므로 이후 관심 정책 알림에 바로 사용할 수 있습니다. 상세 테이블 설계는 `schema_postgres.sql`에 있습니다.
 
 ## 매일 자동 수집
 
-APScheduler를 사용해 매일 자동 수집할 수 있습니다. 아래 명령은 매일 오전 3시(한국 시간)에 기본 수집 대상, 첨부파일, MySQL 동기화를 실행합니다.
+APScheduler를 사용해 매일 자동 수집할 수 있습니다. 아래 명령은 매일 오전 3시(한국 시간)에 기본 수집 대상, 첨부파일, PostgreSQL 동기화를 실행합니다.
 
 ```powershell
 .\.venv\Scripts\python scheduled_collector.py
@@ -103,7 +117,7 @@ powershell -ExecutionPolicy Bypass -File .\register_windows_task.ps1
 
 ## 웹 푸시 알림
 
-로그인한 사용자는 **새 알림** 화면에서 브라우저 알림을 허용할 수 있습니다. 구독 정보는 MySQL에 저장되고, 매일 수집·매칭 작업이 끝나면 새 공고·변경 공고·마감 임박 후보를 브라우저로 발송합니다. 브라우저 푸시는 개발 중에는 `localhost`, 배포 환경에서는 반드시 **HTTPS**에서만 동작합니다.
+로그인한 사용자는 **새 알림** 화면에서 브라우저 알림을 허용할 수 있습니다. 구독 정보는 PostgreSQL에 저장되고, 매일 수집·매칭 작업이 끝나면 새 공고·변경 공고·마감 임박 후보를 브라우저로 발송합니다. 브라우저 푸시는 개발 중에는 `localhost`, 배포 환경에서는 반드시 **HTTPS**에서만 동작합니다.
 
 먼저 VAPID 키를 한 번 생성해 출력값을 로컬 `.env`에 넣으세요. 키는 계정별 비밀값이므로 GitHub에 올리지 않습니다.
 
@@ -227,7 +241,7 @@ Copy-Item .env.example .env
 docker compose up --build -d
 ```
 
-서비스는 기본적으로 `http://localhost:8080`에서 열립니다. 이 구성은 웹·API·MySQL뿐 아니라 매일 오전 3시(Asia/Seoul)에 수집·매칭·알림·RAG 갱신을 수행하는 `collector` 컨테이너를 함께 실행합니다. 정책 원문·첨부파일·RAG 인덱스는 API와 collector가 공유하는 Docker 볼륨에 보관됩니다.
+서비스는 기본적으로 `http://localhost:8080`에서 열립니다. 이 구성은 웹·API·PostgreSQL(pgvector)뿐 아니라 매일 오전 3시(Asia/Seoul)에 수집·매칭·알림·RAG 갱신을 수행하는 `collector` 컨테이너를 함께 실행합니다. 정책 원문과 벡터 인덱스는 PostgreSQL에, 첨부파일은 API와 collector가 공유하는 Docker 볼륨에 보관됩니다.
 
 Windows에서 Docker 명령을 직접 입력하지 않고 실행하려면 [실행파일 배포 안내](실행파일_배포_안내.md)를 참고하세요. build_launcher.ps1을 실행하면 release/MokpoYouthPolicyLauncher.exe가 생성됩니다.
 
@@ -257,7 +271,7 @@ https://policy.example.com/auth/kakao/callback
 
 ```bash
 docker compose logs --tail=100 api collector caddy
-docker compose exec mysql mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" youth_policy > youth_policy_backup.sql
+docker compose exec -T postgres pg_dump -U youth_policy -d youth_policy > youth_policy_backup.sql
 ```
 
 도메인과 서버가 아직 없다면 로컬 Docker 실행까지만 가능하며, 웹 푸시는 `localhost`에서 테스트할 수 있습니다.
@@ -278,7 +292,7 @@ DELETE /api/preparations/{preparation_id}/form-fields/{field_id}
 
 ## 근거 기반 AI 정책상담
 
-MySQL의 정책 원문을 청크로 분할해 `policy_chunks`에 저장하고, 문자·단어 특징 벡터를 FAISS HNSW 인덱스로 구성합니다. 근거를 찾지 못하면 임의로 답변하지 않습니다. `GEMINI_API_KEY`가 없거나 생성에 실패한 경우에도 검색된 공식 원문과 출처를 바탕으로 답변합니다.
+PostgreSQL의 정책 원문을 청크로 분할해 임베딩과 함께 `policy_chunks`에 저장하고, pgvector HNSW 인덱스로 검색합니다. 근거를 찾지 못하면 임의로 답변하지 않습니다. `GEMINI_API_KEY`가 없거나 생성에 실패한 경우에도 검색된 공식 원문과 출처를 바탕으로 답변합니다.
 
 ```powershell
 # 정책 수집·변경 후 검색 인덱스 수동 갱신
@@ -293,7 +307,7 @@ POST /api/chat
 {"question":"목포 청년 주거비 지원 정책을 알려줘"}
 ```
 
-React 화면의 `AI 상담` 메뉴는 비회원도 이용할 수 있습니다. 답변에는 최대 3개의 정책명, 담당기관, 신청 마감일, 공식 원문 링크와 근거 문장이 함께 표시됩니다. 로그인한 사용자의 질문·답변·근거 정책은 최근 20건까지 `policy_chat_messages`에 보관하며, 화면에서 전체 삭제할 수 있습니다. 일일 자동 수집이 끝나면 FAISS 인덱스도 자동으로 갱신됩니다.
+React 화면의 `AI 상담` 메뉴는 비회원도 이용할 수 있습니다. 답변에는 최대 3개의 정책명, 담당기관, 신청 마감일, 공식 원문 링크와 근거 문장이 함께 표시됩니다. 로그인한 사용자의 질문·답변·근거 정책은 최근 20건까지 `policy_chat_messages`에 보관하며, 화면에서 전체 삭제할 수 있습니다. 일일 자동 수집이 끝나면 pgvector 인덱스도 자동으로 갱신됩니다.
 
 `GEMINI_API_KEY`가 `.env`에 설정되어 있으면 검색된 근거만 Gemini에 전달해 한국어 답변을 생성합니다. 기본 모델은 `gemini-3.5-flash-lite`이며, 모델 오류·무료 한도 초과·네트워크 오류가 발생하면 원문 근거를 그대로 안내하는 검색형 답변으로 자동 복귀합니다. 사용자 질문과 검색된 공식 정책 원문은 Gemini API로 전송되므로, 주민등록번호·계좌번호 같은 민감정보는 입력하지 마세요.
 

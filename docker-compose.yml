@@ -1,19 +1,19 @@
-name: mokpo-youth-policy
+name: mokpo_youth_policy
 
 services:
-  mysql:
-    image: mysql:8.4
+  postgres:
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-youth_policy}
-      # 로컬 개발 .env의 MYSQL_USER=root와 분리해 컨테이너에는 전용 계정을 만든다.
-      MYSQL_USER: youth_policy
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-youth_policy}
+      POSTGRES_USER: ${POSTGRES_USER:-youth_policy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-${MYSQL_PASSWORD:?POSTGRES_PASSWORD is required}}
     volumes:
-      - mysql_data:/var/lib/mysql
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT_EXPOSE:-55432}:5432"
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-youth_policy} -d ${POSTGRES_DB:-youth_policy}"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -24,11 +24,11 @@ services:
       dockerfile: Dockerfile.backend
     restart: unless-stopped
     environment:
-      MYSQL_HOST: mysql
-      MYSQL_PORT: 3306
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-youth_policy}
-      MYSQL_USER: youth_policy
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-youth_policy}
+      POSTGRES_USER: ${POSTGRES_USER:-youth_policy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-${MYSQL_PASSWORD}}
       FRONTEND_URL: ${PUBLIC_BASE_URL:-http://localhost}
       BACKEND_URL: ${PUBLIC_BASE_URL:-http://localhost}
       KAKAO_REDIRECT_URI: ${KAKAO_REDIRECT_URI:-http://localhost/auth/kakao/callback}
@@ -51,7 +51,7 @@ services:
       - app_data:/app/data
       - app_logs:/app/logs
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
 
   collector:
@@ -61,11 +61,11 @@ services:
     restart: unless-stopped
     command: ["python", "scheduled_collector.py"]
     environment:
-      MYSQL_HOST: mysql
-      MYSQL_PORT: 3306
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-youth_policy}
-      MYSQL_USER: youth_policy
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-youth_policy}
+      POSTGRES_USER: ${POSTGRES_USER:-youth_policy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-${MYSQL_PASSWORD}}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
@@ -82,7 +82,7 @@ services:
       - app_data:/app/data
       - app_logs:/app/logs
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
 
   web:
@@ -95,6 +95,6 @@ services:
       - api
 
 volumes:
-  mysql_data:
+  postgres_data:
   app_data:
   app_logs:

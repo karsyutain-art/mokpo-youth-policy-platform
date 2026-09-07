@@ -8,7 +8,7 @@ import smtplib
 from datetime import datetime
 from email.message import EmailMessage
 
-from mysql_policy_repository import MySQLPolicyRepository
+from postgres_policy_repository import PostgresPolicyRepository
 from youth_data_collector import load_local_env
 
 
@@ -38,10 +38,10 @@ def deliver_pending(*, dry_run: bool = False, limit: int = 100) -> dict[str, int
     load_local_env()
     if not dry_run and not configured():
         return {"sent": 0, "failed": 0, "skipped": 0, "reason": "SMTP 미설정"}
-    repository = MySQLPolicyRepository(); connection = repository.connect(); repository.initialize(connection)
+    repository = PostgresPolicyRepository(); connection = repository.connect(); repository.initialize(connection)
     counts = {"sent": 0, "failed": 0, "skipped": 0}
     try:
-        cursor = connection.cursor(dictionary=True)
+        cursor = connection.cursor()
         cursor.execute("""SELECT candidate.id, candidate.match_reason, profile.email, event.change_type,
             policy.title, policy.application_end_date, policy.original_link
             FROM policy_match_candidates candidate
@@ -66,12 +66,14 @@ def deliver_pending(*, dry_run: bool = False, limit: int = 100) -> dict[str, int
                 smtp.send_message(_message(row))
                 cursor.execute("""INSERT INTO notification_deliveries (candidate_id, channel, destination, status, sent_at, created_at)
                     VALUES (%s, 'email', %s, 'sent', %s, %s)
-                    ON DUPLICATE KEY UPDATE destination=VALUES(destination), status='sent', error_message=NULL, sent_at=VALUES(sent_at)""", (row["id"], row["email"], now, now))
+                    ON CONFLICT (candidate_id, channel) DO UPDATE SET destination=EXCLUDED.destination,
+                    status='sent', error_message=NULL, sent_at=EXCLUDED.sent_at""", (row["id"], row["email"], now, now))
                 cursor.execute("UPDATE policy_match_candidates SET status='notified' WHERE id=%s", (row["id"],)); counts["sent"] += 1
             except Exception as error:
                 cursor.execute("""INSERT INTO notification_deliveries (candidate_id, channel, destination, status, error_message, created_at)
                     VALUES (%s, 'email', %s, 'failed', %s, %s)
-                    ON DUPLICATE KEY UPDATE destination=VALUES(destination), status='failed', error_message=VALUES(error_message), sent_at=NULL""", (row["id"], row["email"], str(error)[:1000], now)); counts["failed"] += 1
+                    ON CONFLICT (candidate_id, channel) DO UPDATE SET destination=EXCLUDED.destination,
+                    status='failed', error_message=EXCLUDED.error_message, sent_at=NULL""", (row["id"], row["email"], str(error)[:1000], now)); counts["failed"] += 1
         if smtp: smtp.quit()
         connection.commit(); return counts
     finally:
